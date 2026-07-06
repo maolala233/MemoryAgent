@@ -1,0 +1,29 @@
+# LLM provider configuration
+default_provider: mock
+
+providers:
+  mock:
+    type: mock
+    model: mock-gpt
+    description: "Offline mock provider for development without API keys."
+
+  ollama:
+    type: ollama
+    base_url: ${OLLAMA_BASE_URL:http://localhost:11434}
+    model: ${OLLAMA_MODEL:llama3.1}
+    timeout: 120
+    temperature: 0.7
+    max_tokens: 2048
+
+  openai:
+    type: openai
+    api_key: ${OPENAI_API_KEY:}
+    model: ${OPENAI_MODEL:gpt-4o-mini}
+    timeout: 60
+    temperature: 0.7
+    max_tokens: 2048
+
+embedding:
+  provider: ${EMBEDDING_PROVIDER:mock}
+  model: ${EMBEDDING_MODEL:nomic-embed-text}
+  dim: ${EMBEDDING_DIM:384}

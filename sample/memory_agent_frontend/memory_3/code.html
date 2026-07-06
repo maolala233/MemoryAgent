@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Memory Vault | Codex Memory</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .file-tree-item:hover .chevron {
+            opacity: 1;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #E2E8F0;
+            border-radius: 10px;
+        }
+        .active-row {
+            background-color: rgba(53, 37, 205, 0.05);
+        }
+    </style>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    "colors": {
+                        "success": "#10B981",
+                        "primary": "#3525cd",
+                        "on-tertiary-container": "#ffd2be",
+                        "on-background": "#191c1e",
+                        "tertiary-fixed": "#ffdbcc",
+                        "primary-fixed": "#e2dfff",
+                        "on-primary-container": "#dad7ff",
+                        "outline": "#777587",
+                        "tertiary-container": "#a44100",
+                        "surface-bright": "#f7f9fb",
+                        "surface": "#FFFFFF",
+                        "on-primary": "#ffffff",
+                        "on-tertiary-fixed-variant": "#7b2f00",
+                        "surface-container-lowest": "#ffffff",
+                        "surface-container": "#eceef0",
+                        "error": "#ba1a1a",
+                        "on-primary-fixed-variant": "#3323cc",
+                        "inverse-on-surface": "#eff1f3",
+                        "surface-tint": "#4d44e3",
+                        "surface-variant": "#e0e3e5",
+                        "on-secondary-container": "#54647a",
+                        "tertiary": "#7e3000",
+                        "on-secondary-fixed-variant": "#38485d",
+                        "on-secondary-fixed": "#0b1c30",
+                        "on-primary-fixed": "#0f0069",
+                        "tertiary-fixed-dim": "#ffb695",
+                        "surface-container-highest": "#e0e3e5",
+                        "border": "#E2E8F0",
+                        "error-container": "#ffdad6",
+                        "background": "#f7f9fb",
+                        "on-surface": "#191c1e",
+                        "secondary-fixed-dim": "#b7c8e1",
+                        "on-error-container": "#93000a",
+                        "on-secondary": "#ffffff",
+                        "surface-container-low": "#f2f4f6",
+                        "primary-fixed-dim": "#c3c0ff",
+                        "secondary": "#505f76",
+                        "on-tertiary-fixed": "#351000",
+                        "warning": "#F59E0B",
+                        "inverse-surface": "#2d3133",
+                        "on-error": "#ffffff",
+                        "secondary-fixed": "#d3e4fe",
+                        "text-secondary": "#475569",
+                        "on-tertiary": "#ffffff",
+                        "outline-variant": "#c7c4d8",
+                        "secondary-container": "#d0e1fb",
+                        "text-primary": "#0F172A",
+                        "on-surface-variant": "#464555",
+                        "inverse-primary": "#c3c0ff",
+                        "surface-container-high": "#e6e8ea",
+                        "surface-dim": "#d8dadc",
+                        "primary-container": "#4f46e5"
+                    },
+                    "borderRadius": {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    "spacing": {
+                        "panel-padding": "24px",
+                        "unit": "4px",
+                        "touch-target": "44px",
+                        "max-content-width": "1200px",
+                        "sidebar-width": "280px",
+                        "gutter": "16px"
+                    },
+                    "fontFamily": {
+                        "body-sm": ["Inter"],
+                        "body-lg": ["Inter"],
+                        "body-md": ["Inter"],
+                        "label-sm": ["JetBrains Mono"],
+                        "code": ["JetBrains Mono"],
+                        "label-md": ["JetBrains Mono"],
+                        "headline-sm": ["Inter"],
+                        "headline-md": ["Inter"],
+                        "headline-lg": ["Inter"]
+                    },
+                    "fontSize": {
+                        "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                        "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                        "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                        "label-sm": ["11px", {"lineHeight": "14px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                        "code": ["14px", {"lineHeight": "22px", "fontWeight": "400"}],
+                        "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                        "headline-sm": ["18px", {"lineHeight": "26px", "fontWeight": "600"}],
+                        "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                        "headline-lg": ["30px", {"lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+                    }
+                },
+            },
+        }
+    </script>
+</head>
+<body class="bg-background text-on-surface font-body-md overflow-hidden">
+<!-- SideNavBar Shell -->
+<aside class="fixed left-0 top-0 h-full w-[280px] bg-surface border-r border-border flex flex-col p-panel-padding z-50">
+<!-- Header -->
+<div class="mb-8">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 bg-primary rounded flex items-center justify-center text-on-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">terminal</span>
+</div>
+<div>
+<h1 class="text-headline-sm font-bold text-primary leading-none">Codex Memory</h1>
+<p class="text-label-sm text-on-surface-variant mt-1">Agent: Online</p>
+</div>
+</div>
+</div>
+<!-- CTA -->
+<button class="mb-6 w-full flex items-center justify-center gap-2 bg-primary text-on-primary py-3 px-4 rounded-lg font-bold hover:opacity-90 active:scale-95 transition-all shadow-sm">
+<span class="material-symbols-outlined">add</span>
+<span>New Entry</span>
+</button>
+<!-- Main Navigation -->
+<nav class="flex-1 space-y-1">
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-body-md">Dashboard</span>
+</div>
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 bg-primary-fixed-dim text-on-primary-fixed-variant font-bold rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">inventory_2</span>
+<span class="font-body-md">Memory Vault</span>
+</div>
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">search</span>
+<span class="font-body-md">Search</span>
+</div>
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">smart_toy</span>
+<span class="font-body-md">Chat with Agent</span>
+</div>
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">upload_file</span>
+<span class="font-body-md">Import Document</span>
+</div>
+</nav>
+<!-- Footer Navigation -->
+<div class="border-t border-border pt-4 mt-auto space-y-1">
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md">Settings</span>
+</div>
+<div class="cursor-pointer active:scale-95 transition-transform flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors duration-200">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body-md">Support</span>
+</div>
+</div>
+</aside>
+<!-- TopNavBar Shell -->
+<header class="flex justify-between items-center h-touch-target px-panel-padding ml-[280px] w-[calc(100%-280px)] bg-surface border-b border-border fixed top-0 z-40">
+<div class="flex items-center gap-4 flex-1">
+<div class="relative w-full max-w-md focus-within:ring-2 focus-within:ring-primary rounded-lg transition-all">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">search</span>
+<input class="w-full bg-surface-container-low border-none rounded-lg pl-10 pr-4 py-2 text-body-md focus:ring-0" placeholder="Search your memory vault (⌘K)" type="text"/>
+</div>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
+<div class="h-8 w-8 rounded-full bg-surface-variant overflow-hidden border border-border">
+<img class="w-full h-full object-cover" data-alt="Professional studio portrait of a software engineer with short dark hair, wearing a navy blue minimalist sweater. The background is a clean, out-of-focus modern office with warm wooden accents and cool blue ambient lighting, maintaining a professional and high-tech corporate aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCYdPVNvvv2jjofO8yxBLpLmEigcM5hbSYrHBWPQFWW0CKaF6nX-yl_De9pP9ZkQljSjcNhwZZZMnxkpWgcRhoUxMZpj6xewQmd4Ofcv17Cjx15iP8pNXXqtIivC4va3gcnADlRfhG0d-x7IFeIiAgKpJ6WfN5l_IHT3HYGaU1MK08uP7sje0gwqKkknILF6sXAMgcwlRhpJCvrjVeagoUbhPA-VyXLLQeerMdBro5CQEXxz0s0r_2W"/>
+</div>
+</div>
+</header>
+<!-- Main Workspace -->
+<main class="ml-[280px] pt-[touch-target] h-screen flex overflow-hidden">
+<!-- Left Column: File Tree -->
+<div class="w-72 border-r border-border bg-surface flex flex-col">
+<div class="p-4 border-b border-border flex items-center justify-between">
+<h2 class="font-bold text-body-md uppercase tracking-wider text-on-surface-variant">Directory</h2>
+<button class="p-1 hover:bg-surface-container rounded transition-colors">
+<span class="material-symbols-outlined text-[18px]">create_new_folder</span>
+</button>
+</div>
+<div class="flex-1 overflow-y-auto custom-scrollbar p-2">
+<div class="space-y-1">
+<!-- Root Folder: Vault -->
+<div class="file-tree-item">
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface">
+<span class="material-symbols-outlined text-on-surface-variant">keyboard_arrow_down</span>
+<span class="material-symbols-outlined text-primary">folder_open</span>
+<span class="font-medium">Codex Vault</span>
+</div>
+<div class="ml-6 mt-1 space-y-1">
+<!-- Folder: Projects -->
+<div class="flex items-center gap-2 px-2 py-1.5 bg-primary/5 text-primary border-l-2 border-primary rounded-r cursor-pointer">
+<span class="material-symbols-outlined">keyboard_arrow_right</span>
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">folder</span>
+<span>Projects</span>
+</div>
+<!-- Folder: Workflows -->
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface-variant">
+<span class="material-symbols-outlined">keyboard_arrow_right</span>
+<span class="material-symbols-outlined">folder</span>
+<span>Workflows</span>
+</div>
+<!-- Folder: Decisions -->
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface-variant">
+<span class="material-symbols-outlined">keyboard_arrow_right</span>
+<span class="material-symbols-outlined">folder</span>
+<span>Decisions</span>
+</div>
+<!-- Folder: Notes -->
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface-variant">
+<span class="material-symbols-outlined">keyboard_arrow_down</span>
+<span class="material-symbols-outlined">folder</span>
+<span>Notes</span>
+</div>
+<!-- Sub-items for Notes -->
+<div class="ml-6 space-y-1">
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">description</span>
+<span class="text-body-sm">Daily Scrums</span>
+</div>
+<div class="flex items-center gap-2 px-2 py-1.5 hover:bg-surface-container-low rounded cursor-pointer text-on-surface-variant">
+<span class="material-symbols-outlined text-[18px]">description</span>
+<span class="text-body-sm">Brainstorming</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Right Column: Main Content -->
+<div class="flex-1 flex flex-col bg-background overflow-hidden">
+<!-- Content Header -->
+<div class="px-panel-padding py-6">
+<div class="flex items-center justify-between mb-6">
+<div>
+<div class="flex items-center gap-2 text-label-md text-on-surface-variant mb-1 uppercase tracking-widest">
+<span>Vault</span>
+<span class="material-symbols-outlined text-[14px]">chevron_right</span>
+<span class="text-primary font-bold">Projects</span>
+</div>
+<h3 class="text-headline-md font-bold">Project Directories</h3>
+</div>
+<div class="flex items-center gap-3">
+<button class="flex items-center gap-2 bg-surface border border-border px-4 py-2 rounded-lg text-body-md hover:bg-surface-container-low transition-colors">
+<span class="material-symbols-outlined text-[20px]">filter_list</span>
+<span>Filter</span>
+</button>
+<div class="flex border border-border rounded-lg overflow-hidden bg-surface">
+<button class="p-2 hover:bg-surface-container-low bg-surface-container text-primary border-r border-border">
+<span class="material-symbols-outlined">list</span>
+</button>
+<button class="p-2 hover:bg-surface-container-low text-on-surface-variant">
+<span class="material-symbols-outlined">grid_view</span>
+</button>
+</div>
+</div>
+</div>
+<!-- Active Filters -->
+<div class="flex gap-2 mb-6">
+<span class="bg-primary/10 text-primary px-3 py-1 rounded-full text-label-md flex items-center gap-2">
+                        Type: Markdown <span class="material-symbols-outlined text-[14px] cursor-pointer">close</span>
+</span>
+<span class="bg-surface border border-border text-on-surface-variant px-3 py-1 rounded-full text-label-md flex items-center gap-2">
+                        Status: Verified <span class="material-symbols-outlined text-[14px] cursor-pointer">close</span>
+</span>
+<button class="text-primary font-bold text-label-md hover:underline ml-2">Clear all</button>
+</div>
+<!-- Table Content Container -->
+<div class="bg-surface rounded-xl border border-border shadow-sm overflow-hidden">
+<table class="w-full text-left border-collapse">
+<thead class="bg-surface-container-low border-b border-border">
+<tr>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider">
+<div class="flex items-center gap-2">
+                                        Name
+                                        <span class="material-symbols-outlined text-[16px]">arrow_downward</span>
+</div>
+</th>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider">Type</th>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider">Track</th>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider">Last Updated</th>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider">Status</th>
+<th class="px-6 py-4 font-bold text-label-md text-on-surface-variant uppercase tracking-wider text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-border">
+<!-- Item 1 -->
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">description</span>
+<span class="font-medium text-body-md">Project_Aura_Technical_Spec.md</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-code text-label-md px-2 py-0.5 bg-surface-container rounded uppercase border border-border">MD</span>
+</td>
+<td class="px-6 py-4 text-on-surface-variant">Core Engineering</td>
+<td class="px-6 py-4 text-on-surface-variant">2h ago</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-1.5 text-success font-medium text-body-sm">
+<span class="material-symbols-outlined text-[18px]">verified</span>
+                                        Verified
+                                    </div>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="text-on-surface-variant hover:text-primary p-1">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Item 2 -->
+<tr class="hover:bg-surface-container-low transition-colors group active-row">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">description</span>
+<span class="font-medium text-body-md">System_Architecture_v2.md</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-code text-label-md px-2 py-0.5 bg-surface-container rounded uppercase border border-border">MD</span>
+</td>
+<td class="px-6 py-4 text-on-surface-variant">Infrastructure</td>
+<td class="px-6 py-4 text-on-surface-variant">May 12, 2024</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-1.5 text-success font-medium text-body-sm">
+<span class="material-symbols-outlined text-[18px]">verified</span>
+                                        Verified
+                                    </div>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="text-on-surface-variant hover:text-primary p-1">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Item 3 -->
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">description</span>
+<span class="font-medium text-body-md">Meeting_Notes_UI_Refresh.md</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-code text-label-md px-2 py-0.5 bg-surface-container rounded uppercase border border-border">MD</span>
+</td>
+<td class="px-6 py-4 text-on-surface-variant">Product Design</td>
+<td class="px-6 py-4 text-on-surface-variant">Yesterday</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-1.5 text-on-surface-variant font-medium text-body-sm">
+<span class="material-symbols-outlined text-[18px]">history</span>
+                                        Unverified
+                                    </div>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="text-on-surface-variant hover:text-primary p-1">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+<!-- Item 4 -->
+<tr class="hover:bg-surface-container-low transition-colors group">
+<td class="px-6 py-4">
+<div class="flex items-center gap-3">
+<span class="material-symbols-outlined text-primary">description</span>
+<span class="font-medium text-body-md">Deployment_Strategy.md</span>
+</div>
+</td>
+<td class="px-6 py-4">
+<span class="font-code text-label-md px-2 py-0.5 bg-surface-container rounded uppercase border border-border">MD</span>
+</td>
+<td class="px-6 py-4 text-on-surface-variant">DevOps</td>
+<td class="px-6 py-4 text-on-surface-variant">May 10, 2024</td>
+<td class="px-6 py-4">
+<div class="flex items-center gap-1.5 text-success font-medium text-body-sm">
+<span class="material-symbols-outlined text-[18px]">verified</span>
+                                        Verified
+                                    </div>
+</td>
+<td class="px-6 py-4 text-right">
+<button class="text-on-surface-variant hover:text-primary p-1">
+<span class="material-symbols-outlined">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+<!-- Pagination / Footer -->
+<div class="px-6 py-4 bg-surface-container-lowest border-t border-border flex items-center justify-between">
+<span class="text-body-sm text-on-surface-variant">Showing 1 to 4 of 24 documents</span>
+<div class="flex gap-2">
+<button class="px-3 py-1 border border-border rounded hover:bg-surface-container transition-colors disabled:opacity-50" disabled="">
+                                Previous
+                            </button>
+<button class="px-3 py-1 border border-border rounded hover:bg-surface-container transition-colors">
+                                Next
+                            </button>
+</div>
+</div>
+</div>
+</div>
+<!-- Contextual Assistant Peek (Floating Footer) -->
+<div class="mt-auto p-panel-padding">
+<div class="bg-surface border border-primary/20 rounded-xl p-4 flex items-center justify-between shadow-sm">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">smart_toy</span>
+</div>
+<div>
+<p class="font-bold text-body-md">Vault Insight</p>
+<p class="text-body-sm text-on-surface-variant">"Project Aura" has 3 pending unverified updates in the 'Drafts' folder.</p>
+</div>
+</div>
+<button class="bg-primary text-on-primary px-4 py-2 rounded-lg font-bold text-label-md">Review Updates</button>
+</div>
+</div>
+</div>
+</main>
+<script>
+        // Simple micro-interaction for rows
+        document.querySelectorAll('tbody tr').forEach(row => {
+            row.addEventListener('click', () => {
+                document.querySelectorAll('tbody tr').forEach(r => r.classList.remove('active-row'));
+                row.classList.add('active-row');
+            });
+        });
+
+        // Search shortcut simulation
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                document.querySelector('input').focus();
+            }
+        });
+    </script>
+</body></html>

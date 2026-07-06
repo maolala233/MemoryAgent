@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    ports:
+      - "8000:8000"
+    environment:
+      - VAULT_DIR=/app/data/vault
+      - DB_PATH=/app/data/codex_memory.db
+      - UPLOAD_DIR=/app/data/uploads
+      - DEFAULT_LLM_PROVIDER=mock
+      - EMBEDDING_PROVIDER=mock
+      - CORS_ORIGINS=["http://localhost:3000"]
+    volumes:
+      - ./data:/app/data
+      - ./backend/config:/app/backend/config:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND_WS=ws://localhost:8000
+    depends_on:
+      - backend
+    restart: unless-stopped

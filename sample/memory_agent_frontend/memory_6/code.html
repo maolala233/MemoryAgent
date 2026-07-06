@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Codex Memory | Global Search</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=JetBrains+Mono:wght@100..900&display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            "colors": {
+                    "success": "#10B981",
+                    "primary": "#3525cd",
+                    "on-tertiary-container": "#ffd2be",
+                    "on-background": "#191c1e",
+                    "tertiary-fixed": "#ffdbcc",
+                    "primary-fixed": "#e2dfff",
+                    "on-primary-container": "#dad7ff",
+                    "outline": "#777587",
+                    "tertiary-container": "#a44100",
+                    "surface-bright": "#f7f9fb",
+                    "surface": "#FFFFFF",
+                    "on-primary": "#ffffff",
+                    "on-tertiary-fixed-variant": "#7b2f00",
+                    "surface-container-lowest": "#ffffff",
+                    "surface-container": "#eceef0",
+                    "error": "#ba1a1a",
+                    "on-primary-fixed-variant": "#3323cc",
+                    "inverse-on-surface": "#eff1f3",
+                    "surface-tint": "#4d44e3",
+                    "surface-variant": "#e0e3e5",
+                    "on-secondary-container": "#54647a",
+                    "tertiary": "#7e3000",
+                    "on-secondary-fixed-variant": "#38485d",
+                    "on-secondary-fixed": "#0b1c30",
+                    "on-primary-fixed": "#0f0069",
+                    "tertiary-fixed-dim": "#ffb695",
+                    "surface-container-highest": "#e0e3e5",
+                    "border": "#E2E8F0",
+                    "error-container": "#ffdad6",
+                    "background": "#f7f9fb",
+                    "on-surface": "#191c1e",
+                    "secondary-fixed-dim": "#b7c8e1",
+                    "on-error-container": "#93000a",
+                    "on-secondary": "#ffffff",
+                    "surface-container-low": "#f2f4f6",
+                    "primary-fixed-dim": "#c3c0ff",
+                    "secondary": "#505f76",
+                    "on-tertiary-fixed": "#351000",
+                    "warning": "#F59E0B",
+                    "inverse-surface": "#2d3133",
+                    "on-error": "#ffffff",
+                    "secondary-fixed": "#d3e4fe",
+                    "text-secondary": "#475569",
+                    "on-tertiary": "#ffffff",
+                    "outline-variant": "#c7c4d8",
+                    "secondary-container": "#d0e1fb",
+                    "text-primary": "#0F172A",
+                    "on-surface-variant": "#464555",
+                    "inverse-primary": "#c3c0ff",
+                    "surface-container-high": "#e6e8ea",
+                    "surface-dim": "#d8dadc",
+                    "primary-container": "#4f46e5"
+            },
+            "borderRadius": {
+                    "DEFAULT": "0.125rem",
+                    "lg": "0.25rem",
+                    "xl": "0.5rem",
+                    "full": "0.75rem"
+            },
+            "spacing": {
+                    "panel-padding": "24px",
+                    "unit": "4px",
+                    "touch-target": "44px",
+                    "max-content-width": "1200px",
+                    "sidebar-width": "280px",
+                    "gutter": "16px"
+            },
+            "fontFamily": {
+                    "body-sm": ["Inter"],
+                    "body-lg": ["Inter"],
+                    "body-md": ["Inter"],
+                    "label-sm": ["JetBrains Mono"],
+                    "code": ["JetBrains Mono"],
+                    "label-md": ["JetBrains Mono"],
+                    "headline-sm": ["Inter"],
+                    "headline-md": ["Inter"],
+                    "headline-lg": ["Inter"]
+            },
+            "fontSize": {
+                    "body-sm": ["13px", {"lineHeight": "18px", "fontWeight": "400"}],
+                    "body-lg": ["16px", {"lineHeight": "24px", "fontWeight": "400"}],
+                    "body-md": ["14px", {"lineHeight": "20px", "fontWeight": "400"}],
+                    "label-sm": ["11px", {"lineHeight": "14px", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                    "code": ["14px", {"lineHeight": "22px", "fontWeight": "400"}],
+                    "label-md": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                    "headline-sm": ["18px", {"lineHeight": "26px", "fontWeight": "600"}],
+                    "headline-md": ["24px", {"lineHeight": "32px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                    "headline-lg": ["30px", {"lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "700"}]
+            }
+          },
+        },
+      }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #E2E8F0;
+            border-radius: 10px;
+        }
+        .result-card:hover .title-link {
+            color: #3525cd;
+        }
+    </style>
+</head>
+<body class="bg-background text-on-surface font-body-md overflow-hidden">
+<!-- Sidebar Navigation -->
+<aside class="fixed left-0 top-0 h-full w-[280px] bg-surface border-r border-border flex flex-col p-panel-padding z-50">
+<div class="mb-8">
+<div class="flex items-center gap-3">
+<div class="w-8 h-8 bg-primary rounded flex items-center justify-center">
+<span class="material-symbols-outlined text-white text-[20px]" style="font-variation-settings: 'FILL' 1;">terminal</span>
+</div>
+<div>
+<h1 class="text-headline-sm font-headline-sm font-bold text-primary">Codex Memory</h1>
+<p class="text-label-sm text-on-surface-variant">Agent: Online</p>
+</div>
+</div>
+</div>
+<nav class="flex-1 space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200 cursor-pointer active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined">dashboard</span>
+<span class="font-body-md">Dashboard</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200 cursor-pointer active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined">inventory_2</span>
+<span class="font-body-md">Memory Vault</span>
+</a>
+<!-- Active State: Search -->
+<a class="flex items-center gap-3 px-3 py-2 bg-primary-fixed-dim text-on-primary-fixed-variant font-bold rounded-lg cursor-pointer active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">search</span>
+<span class="font-body-md">Search</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200 cursor-pointer active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined">smart_toy</span>
+<span class="font-body-md">Chat with Agent</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200 cursor-pointer active:scale-95 transition-transform" href="#">
+<span class="material-symbols-outlined">upload_file</span>
+<span class="font-body-md">Import Document</span>
+</a>
+</nav>
+<button class="mt-4 w-full bg-primary text-white py-2.5 rounded-lg font-bold text-body-md hover:bg-opacity-90 transition-all flex items-center justify-center gap-2 mb-8">
+<span class="material-symbols-outlined">add</span>
+            New Entry
+        </button>
+<div class="mt-auto pt-4 border-t border-border space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200" href="#">
+<span class="material-symbols-outlined">settings</span>
+<span class="font-body-md">Settings</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-low transition-colors duration-200" href="#">
+<span class="material-symbols-outlined">help</span>
+<span class="font-body-md">Support</span>
+</a>
+</div>
+</aside>
+<!-- Top Navigation -->
+<header class="fixed top-0 right-0 left-[280px] h-touch-target bg-surface border-b border-border flex justify-between items-center px-panel-padding z-40">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-on-surface-variant">search</span>
+<span class="text-on-surface-variant font-body-md">Global Search Engine</span>
+</div>
+<div class="flex items-center gap-4">
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors">notifications</button>
+<button class="material-symbols-outlined text-on-surface-variant hover:text-primary transition-colors">settings</button>
+<div class="w-8 h-8 rounded-full bg-surface-container-high overflow-hidden border border-border">
+<img class="w-full h-full object-cover" data-alt="Close-up professional headshot of a software developer with a clean, high-tech background. The lighting is crisp and modern, featuring soft blue and white tones to match a professional tech environment. The subject has a confident expression, conveying expertise and reliability. The overall style is minimalist and sharp." src="https://lh3.googleusercontent.com/aida-public/AB6AXuCLYxdUDtcmRBldA_rGFsFDNig1o01-iTw2quk8SquvVrwkg9IRyX1mntPZcaq_KrdqrCXmfKQsM1UV5BnaIQLNQCgg537FP3q2URBUHOclln9gw-SWKBT_hCUR2RZ-FdThehY9aFhVyRaoTkniAnblgCCzp1v3utRFk0hpb8MfKevfd05IO-51SIN7mGUpc5D2u86LIKCWgLnhg53ndEPuKGuHelj0pa4PcEa1CpEzMEawjRy25in9"/>
+</div>
+</div>
+</header>
+<!-- Main Content Canvas -->
+<main class="ml-[280px] pt-touch-target h-screen flex">
+<!-- Results and Search Area -->
+<div class="flex-1 flex flex-col h-full overflow-hidden">
+<!-- Search Header Area -->
+<div class="px-panel-padding py-8 bg-surface-bright border-b border-border">
+<div class="max-w-3xl mx-auto space-y-6">
+<div class="relative">
+<span class="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-on-surface-variant text-[24px]">search</span>
+<input class="w-full pl-12 pr-4 py-4 bg-surface border border-border rounded-xl focus:ring-2 focus:ring-primary focus:border-primary outline-none text-body-lg shadow-sm transition-all" placeholder="Search across your code, documents, and memories..." type="text" value="distributed systems architecture"/>
+<div class="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+<span class="text-label-sm text-on-surface-variant bg-surface-container px-2 py-1 rounded border border-border">⌘ K</span>
+</div>
+</div>
+<div class="flex items-center justify-center">
+<div class="inline-flex p-1 bg-surface-container rounded-lg border border-border">
+<button class="px-4 py-1.5 rounded-md text-label-md transition-all bg-surface shadow-sm text-primary font-bold">Keyword</button>
+<button class="px-4 py-1.5 rounded-md text-label-md transition-all text-on-surface-variant hover:text-on-surface">Semantic</button>
+</div>
+<div class="mx-6 h-4 w-px bg-border"></div>
+<div class="flex items-center gap-2">
+<span class="text-label-sm text-on-surface-variant">Results count:</span>
+<span class="text-label-md font-bold text-on-surface">1,428 files</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Results List -->
+<div class="flex-1 overflow-y-auto custom-scrollbar px-panel-padding py-6">
+<div class="max-w-3xl mx-auto space-y-4">
+<!-- Result Card 1 -->
+<div class="result-card bg-surface border border-border p-5 rounded-xl hover:border-primary transition-all cursor-pointer group">
+<div class="flex justify-between items-start mb-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">description</span>
+<h3 class="text-body-lg font-bold text-on-surface title-link transition-colors">Distributed_Systems_Whitepaper_V2.md</h3>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-0.5 bg-success/10 border border-success/20 rounded-full">
+<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+<span class="text-label-sm text-success">98% Match</span>
+</div>
+</div>
+<p class="text-body-md text-on-surface-variant mb-4 leading-relaxed">
+                            ...understanding the core principles of <span class="bg-primary-fixed text-primary font-bold px-0.5 rounded">distributed systems architecture</span> involves analyzing CAP theorem tradeoffs, consensus algorithms like Raft, and the implementation of eventual consistency models in high-scale environments...
+                        </p>
+<div class="flex flex-wrap items-center gap-3">
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">#architecture</span>
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">#whitepaper</span>
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">#engineering</span>
+<div class="ml-auto flex items-center gap-2 text-label-sm text-outline">
+<span class="material-symbols-outlined text-[14px]">calendar_today</span>
+                                Oct 24, 2023
+                                <span class="mx-1">•</span>
+<span class="material-symbols-outlined text-[14px]">history</span>
+                                Modified 2h ago
+                            </div>
+</div>
+</div>
+<!-- Result Card 2 -->
+<div class="result-card bg-surface border border-border p-5 rounded-xl hover:border-primary transition-all cursor-pointer group">
+<div class="flex justify-between items-start mb-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">code</span>
+<h3 class="text-body-lg font-bold text-on-surface title-link transition-colors">cluster_manager.py</h3>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-0.5 bg-success/10 border border-success/20 rounded-full">
+<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+<span class="text-label-sm text-success">92% Match</span>
+</div>
+</div>
+<div class="bg-surface-container-lowest border border-border rounded p-3 mb-4 font-code text-body-sm overflow-hidden">
+<code class="text-on-surface-variant">
+                                def initialize_cluster(nodes):<br/>
+                                    """Implements the base <span class="bg-primary-fixed text-primary font-bold">distributed systems architecture</span>"""<br/>
+                                    for node in nodes:<br/>
+                                        node.set_status('BOOTSTRAPPING')
+                            </code>
+</div>
+<div class="flex flex-wrap items-center gap-3">
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">python</span>
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">infrastructure</span>
+<div class="ml-auto flex items-center gap-2 text-label-sm text-outline">
+<span class="material-symbols-outlined text-[14px]">calendar_today</span>
+                                Sep 12, 2023
+                                <span class="mx-1">•</span>
+<span class="material-symbols-outlined text-[14px]">history</span>
+                                Modified 12d ago
+                            </div>
+</div>
+</div>
+<!-- Result Card 3 -->
+<div class="result-card bg-surface border border-border p-5 rounded-xl hover:border-primary transition-all cursor-pointer group">
+<div class="flex justify-between items-start mb-2">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">forum</span>
+<h3 class="text-body-lg font-bold text-on-surface title-link transition-colors">Meeting Notes: Backend Refresh</h3>
+</div>
+<div class="flex items-center gap-1.5 px-2 py-0.5 bg-warning/10 border border-warning/20 rounded-full">
+<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+<span class="text-label-sm text-warning">76% Match</span>
+</div>
+</div>
+<p class="text-body-md text-on-surface-variant mb-4 leading-relaxed">
+                            Sarah mentioned that our current <span class="bg-primary-fixed text-primary font-bold px-0.5 rounded">architecture</span> is becoming a bottleneck. We need to rethink how we distribute services...
+                        </p>
+<div class="flex flex-wrap items-center gap-3">
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">#meeting</span>
+<span class="text-label-md bg-surface-container-low border border-border px-2 py-0.5 rounded text-on-secondary-container">#backend</span>
+<div class="ml-auto flex items-center gap-2 text-label-sm text-outline">
+<span class="material-symbols-outlined text-[14px]">calendar_today</span>
+                                Aug 05, 2023
+                                <span class="mx-1">•</span>
+<span class="material-symbols-outlined text-[14px]">history</span>
+                                Modified 1mo ago
+                            </div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Filter Sidebar -->
+<aside class="w-[320px] bg-surface border-l border-border h-full flex flex-col p-panel-padding overflow-y-auto custom-scrollbar">
+<div class="flex items-center justify-between mb-6">
+<h2 class="text-headline-sm font-bold text-on-surface">Filters</h2>
+<button class="text-label-md text-primary font-bold hover:underline">Reset All</button>
+</div>
+<!-- Memory Types -->
+<section class="mb-8">
+<h3 class="text-label-md uppercase tracking-wider text-outline mb-4">Memory Types</h3>
+<div class="space-y-3">
+<label class="flex items-center gap-3 group cursor-pointer">
+<input checked="" class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Documents (.md, .txt)</span>
+</label>
+<label class="flex items-center gap-3 group cursor-pointer">
+<input checked="" class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Source Code</span>
+</label>
+<label class="flex items-center gap-3 group cursor-pointer">
+<input class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Chat Transcripts</span>
+</label>
+<label class="flex items-center gap-3 group cursor-pointer">
+<input class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Web Clippings</span>
+</label>
+</div>
+</section>
+<!-- Tracks -->
+<section class="mb-8">
+<h3 class="text-label-md uppercase tracking-wider text-outline mb-4">Tracks</h3>
+<div class="space-y-3">
+<label class="flex items-center gap-3 group cursor-pointer">
+<input checked="" class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<div class="w-2 h-2 rounded-full bg-blue-500"></div>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Engineering</span>
+</label>
+<label class="flex items-center gap-3 group cursor-pointer">
+<input checked="" class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<div class="w-2 h-2 rounded-full bg-purple-500"></div>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Product Strategy</span>
+</label>
+<label class="flex items-center gap-3 group cursor-pointer">
+<input class="w-4 h-4 rounded border-border text-primary focus:ring-primary" type="checkbox"/>
+<div class="w-2 h-2 rounded-full bg-amber-500"></div>
+<span class="text-body-md text-on-surface-variant group-hover:text-on-surface">Personal Knowledge</span>
+</label>
+</div>
+</section>
+<!-- Date Range -->
+<section class="mb-8">
+<h3 class="text-label-md uppercase tracking-wider text-outline mb-4">Date Range</h3>
+<div class="space-y-4">
+<div class="relative">
+<select class="w-full pl-3 pr-10 py-2 bg-surface border border-border rounded text-body-md appearance-none focus:ring-1 focus:ring-primary outline-none cursor-pointer">
+<option>Last 30 Days</option>
+<option>Last 6 Months</option>
+<option>Year to Date</option>
+<option>Custom Range</option>
+</select>
+<span class="absolute right-3 top-1/2 -translate-y-1/2 material-symbols-outlined text-outline pointer-events-none">expand_more</span>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<div class="flex flex-col gap-1">
+<span class="text-label-sm text-outline">From</span>
+<input class="bg-surface border border-border rounded px-2 py-1.5 text-body-sm outline-none focus:border-primary" type="date"/>
+</div>
+<div class="flex flex-col gap-1">
+<span class="text-label-sm text-outline">To</span>
+<input class="bg-surface border border-border rounded px-2 py-1.5 text-body-sm outline-none focus:border-primary" type="date"/>
+</div>
+</div>
+</div>
+</section>
+<!-- Relevance Threshold -->
+<section class="mb-8">
+<h3 class="text-label-md uppercase tracking-wider text-outline mb-4">Min. Relevance Score</h3>
+<div class="px-1">
+<input class="w-full h-1.5 bg-surface-container rounded-lg appearance-none cursor-pointer accent-primary" max="100" min="0" type="range" value="65"/>
+<div class="flex justify-between mt-2 text-label-sm text-outline">
+<span>0%</span>
+<span class="font-bold text-primary">65%</span>
+<span>100%</span>
+</div>
+</div>
+</section>
+<div class="mt-auto">
+<div class="p-4 bg-primary/5 border border-primary/10 rounded-lg">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]">bolt</span>
+<span class="text-label-md font-bold text-primary">Pro Tip</span>
+</div>
+<p class="text-label-sm text-on-surface-variant">Use <code class="bg-white px-1 border border-border rounded">track:eng</code> to limit search to engineering files instantly.</p>
+</div>
+</div>
+</aside>
+</main>
+<!-- Micro-interaction Scripts -->
+<script>
+        // Simple search mode toggle
+        const toggleButtons = document.querySelectorAll('.inline-flex button');
+        toggleButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                toggleButtons.forEach(b => {
+                    b.classList.remove('bg-surface', 'shadow-sm', 'text-primary', 'font-bold');
+                    b.classList.add('text-on-surface-variant');
+                });
+                btn.classList.add('bg-surface', 'shadow-sm', 'text-primary', 'font-bold');
+                btn.classList.remove('text-on-surface-variant');
+            });
+        });
+
+        // Search shortcut listener
+        document.addEventListener('keydown', (e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                document.querySelector('input[type="text"]').focus();
+            }
+        });
+    </script>
+</body></html>

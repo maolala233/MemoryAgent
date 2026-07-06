@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-on-surface font-sans text-body-md antialiased;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-outline-variant;
+  }
+}
+
+@layer components {
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 24;
+    vertical-align: middle;
+    line-height: 1;
+  }
+  .card {
+    @apply bg-surface border border-border rounded-lg;
+  }
+  .btn-primary {
+    @apply bg-primary text-on-primary rounded-md px-4 py-2 font-semibold hover:opacity-90 active:scale-95 transition-all;
+  }
+  .btn-ghost {
+    @apply border border-border text-on-surface rounded-md px-4 py-2 hover:bg-surface-container-low transition-colors;
+  }
+  .pill {
+    @apply px-2 py-0.5 rounded-full text-label-md font-mono;
+  }
+  .input-base {
+    @apply w-full bg-surface-container-low border border-border rounded px-3 py-2 text-body-md focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary;
+  }
+}
+
+/* Markdown rendering */
+.prose-cm {
+  @apply text-on-surface leading-relaxed;
+}
+.prose-cm h1 {
+  @apply text-headline-md font-bold mt-6 mb-3;
+}
+.prose-cm h2 {
+  @apply text-headline-sm font-bold mt-5 mb-2;
+}
+.prose-cm h3 {
+  @apply text-body-lg font-semibold mt-4 mb-2;
+}
+.prose-cm p {
+  @apply my-3;
+}
+.prose-cm ul {
+  @apply list-disc pl-6 my-3 space-y-1;
+}
+.prose-cm ol {
+  @apply list-decimal pl-6 my-3 space-y-1;
+}
+.prose-cm code {
+  @apply font-mono text-[13px] bg-surface-container px-1.5 py-0.5 rounded;
+}
+.prose-cm pre {
+  @apply bg-inverse-surface text-surface p-4 rounded-lg overflow-x-auto my-4;
+}
+.prose-cm pre code {
+  @apply bg-transparent text-inherit p-0;
+}
+.prose-cm blockquote {
+  @apply border-l-4 border-primary pl-4 italic text-on-surface-variant my-3;
+}
+.prose-cm a {
+  @apply text-primary underline;
+}
+.prose-cm table {
+  @apply w-full border-collapse my-4;
+}
+.prose-cm th,
+.prose-cm td {
+  @apply border border-border px-3 py-2 text-left;
+}
+.prose-cm mark {
+  @apply bg-primary-fixed text-primary px-0.5 rounded;
+}
+
+/* highlight.js token colors (minimal dark theme override) */
+.hljs {
+  background: transparent !important;
+  color: #e2e8f0 !important;
+}
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type {
+  color: #c3c0ff;
+}
+.hljs-string,
+.hljs-attr {
+  color: #ffd2be;
+}
+.hljs-number,
+.hljs-literal {
+  color: #ffd6e8;
+}
+.hljs-comment {
+  color: #94a3b8;
+}

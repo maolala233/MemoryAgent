@@ -1,0 +1,41 @@
+# Retrieval / search configuration
+default_strategy: hybrid
+
+strategies:
+  keyword:
+    enabled: true
+    fts_table: memory_fts
+    limit: 20
+  semantic:
+    enabled: true
+    top_k: 20
+    min_score: 0.15
+  hybrid:
+    enabled: true
+    keyword_weight: 0.55
+    semantic_weight: 0.45
+    limit: 20
+
+cache:
+  enabled: true
+  ttl_seconds: 300
+
+filters:
+  tracks:
+    - project
+    - workflow
+    - decision
+    - note
+    - reference
+  memory_types:
+    - project
+    - workflow
+    - decision
+    - note
+    - reference
+    - imported_document
+  statuses:
+    - active
+    - verified
+    - stale
+    - deleted
