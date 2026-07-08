@@ -64,6 +64,24 @@ async def search(req: SearchRequest) -> SearchResponse:
         except Exception as exc:
             warn(f"Mandol holistic 检索失败: {exc}")
 
+    elif strategy in ("entity", "entity_relation") and mandol_service.is_enabled:
+        try:
+            hits = mandol_service.retrieve_by_view(
+                req.query, "entity_relation", top_k=req.limit, use_rerank=req.use_rerank,
+            )
+            results = [_mandol_hit_to_result(h) for h in hits]
+        except Exception as exc:
+            warn(f"Mandol entity 检索失败: {exc}")
+
+    elif strategy in ("event", "causal", "event_causal") and mandol_service.is_enabled:
+        try:
+            hits = mandol_service.retrieve_by_view(
+                req.query, "event_causal", top_k=req.limit, use_rerank=req.use_rerank,
+            )
+            results = [_mandol_hit_to_result(h) for h in hits]
+        except Exception as exc:
+            warn(f"Mandol event 检索失败: {exc}")
+
     elif strategy == "view" and mandol_service.is_enabled:
         if not req.view:
             raise HTTPException(status_code=400, detail="view 策略需要指定 view 参数")
@@ -131,6 +149,26 @@ async def search(req: SearchRequest) -> SearchResponse:
             min_score=req.min_score, **filters,
         )
         results = [MemoryResult(**r) for r in results]
+
+    # Fallback：如果 Mandol 策略返回 0 条结果，退回全息检索
+    if not results and strategy in ("entity", "event", "causal", "entity_relation", "event_causal", "view", "space", "graph") and mandol_service.is_enabled:
+        try:
+            warn(f"策略 {strategy} 返回 0 条结果，fallback 到 holistic 检索")
+            hits = mandol_service.holistic_retrieve(
+                req.query, top_k=req.limit, use_rerank=req.use_rerank,
+            )
+            results = [_mandol_hit_to_result(h) for h in hits]
+        except Exception as exc:
+            warn(f"Fallback holistic 检索也失败: {exc}")
+
+    # Fallback：如果传统检索返回 0 条，尝试 Mandol text 检索
+    if not results and strategy in ("keyword", "semantic", "hybrid") and mandol_service.is_enabled:
+        try:
+            warn(f"传统检索 {strategy} 返回 0 条结果，fallback 到 Mandol text 检索")
+            hits = mandol_service.search_by_text(req.query, top_k=req.limit)
+            results = [_mandol_hit_to_result(h) for h in hits]
+        except Exception as exc:
+            warn(f"Fallback text 检索也失败: {exc}")
 
     if req.min_score > 0:
         results = [r for r in results if r.score >= req.min_score]

@@ -58,25 +58,7 @@ export function TopBar({
             )}
           </div>
         )}
-        {!title && showSearch && (
-          <form onSubmit={onSubmit} className="relative w-full max-w-md">
-            <Icon
-              name="search"
-              className="absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant text-[20px]"
-            />
-            <input
-              id="topbar-search"
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索记忆..."
-              className="w-full pl-10 pr-12 py-2 bg-surface-container-low border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-body-md transition-all"
-            />
-            <kbd className="absolute right-3 top-1/2 -translate-y-1/2 text-label-sm text-on-surface-variant bg-surface px-2 py-0.5 rounded border border-border">
-              ⌘K
-            </kbd>
-          </form>
-        )}
+        
       </div>
 
       <div className="flex items-center gap-2">

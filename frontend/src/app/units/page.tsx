@@ -45,7 +45,7 @@ export default function UnitsPage() {
   };
 
   return (
-    <AppShell title="记忆单元" subtitle="Mandol 记忆单元管理">
+    <AppShell title="记忆单元" subtitle="记忆单元管理">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="w-full px-panel-padding py-8 space-y-6">
           {/* 操作栏 */}

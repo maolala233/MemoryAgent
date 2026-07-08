@@ -118,7 +118,7 @@ export default function ImportPage() {
   };
 
   return (
-    <AppShell title="Import Document" subtitle="PDF / DOCX / MD → Memory">
+    <AppShell title="文档导入" subtitle="PDF / DOCX / MD → 记忆">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Step indicator */}

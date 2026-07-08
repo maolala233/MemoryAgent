@@ -10,17 +10,14 @@ import { EmptyState } from "@/components/shared/EmptyState";
 import { useSearch } from "@/hooks/useSearch";
 import type { MemoryResult, SearchFilters } from "@/types";
 
-type Strategy = "keyword" | "semantic" | "hybrid" | "mandol" | "entity" | "event" | "graph" | "causal";
+type Strategy = "mandol" | "entity" | "event" | "graph" | "keyword";
 
 const STRATEGY_LABELS: Record<Strategy, string> = {
+  mandol: "全息检索",
+  entity: "实体关系",
+  event: "事件因果",
+  graph: "图谱扩展",
   keyword: "关键词",
-  semantic: "语义",
-  hybrid: "混合",
-  mandol: "Mandol 全息",
-  entity: "实体",
-  event: "事件",
-  graph: "图谱",
-  causal: "因果",
 };
 
 function highlight(text: string, query: string): React.ReactNode {
@@ -49,21 +46,43 @@ function highlight(text: string, query: string): React.ReactNode {
   );
 }
 
+function _formatUid(uid: string): { label: string; type: string } {
+  if (!uid) return { label: "未知单元", type: "unit" };
+  if (uid.startsWith("entity:")) return { label: uid.slice(7), type: "实体" };
+  if (uid.startsWith("event:")) return { label: uid.slice(6), type: "事件" };
+  if (uid.startsWith("summary:")) return { label: uid.slice(8), type: "摘要" };
+  if (uid.startsWith("doc:")) {
+    const parts = uid.split(":");
+    const filePath = parts[1] || "";
+    const fileName = filePath.split("/").pop() || filePath;
+    const chunkIdx = parts.find((p) => p.startsWith("chunk:"));
+    return { label: fileName, type: chunkIdx ? `文档片段 ${chunkIdx}` : "文档" };
+  }
+  return { label: uid, type: "单元" };
+}
+
 function ResultCard({ result, query, isMandol }: { result: MemoryResult; query: string; isMandol: boolean }) {
   if (isMandol) {
-    const scorePct = Math.round((result.score || 0) * 100);
+    const rawScore = result.score || 0;
+    // Mandol rerank 分数通常 0-10，归一化为百分比
+    const scorePct = Math.min(100, Math.round((rawScore / 10) * 100));
+    const { label, type } = _formatUid(result.uid || "");
+    const meta = result.metadata || {};
     return (
       <div className="result-card bg-surface border border-border p-5 rounded-xl hover:border-primary transition-all cursor-pointer group">
         <div className="flex justify-between items-start mb-2">
           <div className="flex items-center gap-2 min-w-0">
             <Icon name="memory" className="text-primary text-[20px] flex-shrink-0" />
-            <h3 className="text-body-lg font-bold text-on-surface truncate">
-              {result.uid || "未知单元"}
+            <span className="px-2 py-0.5 bg-primary-fixed text-primary rounded text-label-sm flex-shrink-0">
+              {type}
+            </span>
+            <h3 className="text-body-lg font-bold text-on-surface truncate" title={result.uid || undefined}>
+              {label}
             </h3>
           </div>
           {result.score !== undefined && (
-            <Pill variant={scorePct >= 80 ? "success" : scorePct >= 50 ? "info" : "default"} size="sm">
-              {result.score.toFixed(4)}
+            <Pill variant={scorePct >= 70 ? "success" : scorePct >= 40 ? "info" : "default"} size="sm">
+              {scorePct}%
             </Pill>
           )}
         </div>
@@ -73,21 +92,22 @@ function ResultCard({ result, query, isMandol }: { result: MemoryResult; query: 
         {/* 分数详情 */}
         {result.scores && Object.keys(result.scores).length > 0 && (
           <div className="flex flex-wrap items-center gap-2 mb-2">
-            {Object.entries(result.scores).map(([key, val]) => (
+            {Object.entries(result.scores as Record<string, number>).map(([key, val]) => (
               <span key={key} className="text-label-sm text-on-surface-variant bg-surface-container-low px-2 py-0.5 rounded">
-                {key}: {typeof val === "number" ? val.toFixed(4) : val}
+                {key}: {typeof val === "number" ? val.toFixed(4) : String(val)}
               </span>
             ))}
           </div>
         )}
-        {/* 空间标签 */}
-        {result.metadata?.spaces && (
-          <div className="flex flex-wrap items-center gap-2">
-            {(result.metadata.spaces as string[]).map((space) => (
-              <Pill key={space} variant="info" size="sm">{space}</Pill>
-            ))}
-          </div>
-        )}
+        {/* 空间标签 + 来源 */}
+        <div className="flex flex-wrap items-center gap-2">
+          {meta.spaces && Array.isArray(meta.spaces) && (meta.spaces as string[]).map((space) => (
+            <Pill key={space} variant="info" size="sm">{space}</Pill>
+          ))}
+          <span className="ml-auto text-label-sm text-outline font-mono truncate max-w-[50%]" title={result.uid || undefined}>
+            {result.uid}
+          </span>
+        </div>
       </div>
     );
   }
@@ -178,7 +198,7 @@ function SearchContent() {
   };
 
   return (
-    <AppShell noTopBar>
+    <AppShell title="记忆检索" subtitle="检索关键记忆信息">
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* 搜索头部 */}
         <div className="px-panel-padding py-8 bg-surface-bright border-b border-border">

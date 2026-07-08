@@ -157,7 +157,7 @@ export default function DashboardPage() {
   ];
 
   return (
-    <AppShell title="仪表盘" subtitle="Mandol 记忆平台总览">
+    <AppShell title="仪表盘" subtitle="记忆平台总览">
       <div className="flex-1 overflow-y-auto custom-scrollbar w-full">
         <div className="px-8 py-6 space-y-5">
           {error && (

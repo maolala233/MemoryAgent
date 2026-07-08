@@ -109,6 +109,12 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
     if not info:
         raise HTTPException(status_code=404, detail="File not found")
     files = req.memory_files or info.get("memory_files", [])
+    # 统一为 dict 访问方式（info 中存的是 dict，req 中是 Pydantic 模型）
+    def _get(f, key, default=None):
+        if isinstance(f, dict):
+            return f.get(key, default)
+        return getattr(f, key, default)
+
     saved_paths: list[str] = []
     mandol_synced = 0
     # 1) 自动写一份原始 markdown 入库
@@ -167,13 +173,16 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
     # 3) 保存 chunked 记忆文件
     for f in files:
         try:
+            rel_path = _get(f, "rel_path")
+            content = _get(f, "content")
+            frontmatter = _get(f, "frontmatter", {}) or {}
             doc = memory_service.create_document(
-                f.rel_path, f.content,
-                memory_type=f.frontmatter.get("memory_type", "imported_document"),
-                track=f.frontmatter.get("track", "note"),
-                project_id=f.frontmatter.get("project_id"),
-                summary=f.frontmatter.get("summary"),
-                keywords=f.frontmatter.get("keywords", []),
+                rel_path, content,
+                memory_type=frontmatter.get("memory_type", "imported_document"),
+                track=frontmatter.get("track", "note"),
+                project_id=frontmatter.get("project_id"),
+                summary=frontmatter.get("summary"),
+                keywords=frontmatter.get("keywords", []),
             )
             saved_paths.append(doc["rel_path"])
             # 同步到 Mandol
@@ -181,10 +190,10 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                 from ..services.mandol_service import mandol_service
                 if mandol_service.is_enabled:
                     if mandol_service.sync_document(
-                        doc["rel_path"], f.content,
+                        doc["rel_path"], content,
                         metadata={
-                            "memory_type": f.frontmatter.get("memory_type", "imported_document"),
-                            "track": f.frontmatter.get("track", "note"),
+                            "memory_type": frontmatter.get("memory_type", "imported_document"),
+                            "track": frontmatter.get("track", "note"),
                             "title": doc.get("title"),
                         },
                     ):
