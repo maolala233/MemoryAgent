@@ -164,6 +164,33 @@ export interface SaveResponse {
   saved_count: number;
   paths: string[];
   mandol_synced?: number;
+  original_path?: string;
+  summary_path?: string;
+  summary_text?: string;
+}
+
+export interface ExternalStoreStatus {
+  neo4j: { available: boolean; nodes: number; edges: number; rel_types: string[]; error?: string };
+  milvus: { available: boolean; uri: string; collection: string; unit_count: number; error?: string };
+  snapshot: { path: string; exists: boolean; size_bytes: number };
+}
+
+export interface Neo4jNode {
+  uid?: string;
+  labels?: string[];
+  props?: Record<string, unknown>;
+}
+export interface Neo4jEdge {
+  id?: number | string;
+  s?: string;
+  t?: string;
+  type?: string;
+  props?: Record<string, unknown>;
+}
+export interface Neo4jSubgraph {
+  nodes: Neo4jNode[];
+  edges: Neo4jEdge[];
+  center?: string;
 }
 
 export interface TreeNode {

@@ -25,6 +25,7 @@ from ..services.chunking_service import chunking_service, Chunk
 from ..services.doc_to_memory import doc_to_memory
 from ..services.document_parser import document_parser
 from ..services.memory_service import memory_service
+from ..services.summary_service import summary_generator
 from ..utils.logger import warn
 from ..utils.security import validate_file_type, validate_file_size
 
@@ -110,6 +111,60 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
     files = req.memory_files or info.get("memory_files", [])
     saved_paths: list[str] = []
     mandol_synced = 0
+    # 1) 自动写一份原始 markdown 入库
+    original_path: str | None = None
+    try:
+        title_base = info["metadata"].get("title") or info.get("filename", "imported_document")
+        original = summary_generator.generate_original_markdown(
+            title=title_base,
+            raw_text=info.get("text", ""),
+            source_doc=info.get("filename", ""),
+            project_id=req.project_id,
+        )
+        if original:
+            original_path = original["rel_path"]
+            saved_paths.append(original_path)
+            # 同步到 Mandol
+            if req.build_mandol:
+                from ..services.mandol_service import mandol_service
+                if mandol_service.is_enabled and mandol_service.sync_document(
+                    original_path, original["content"],
+                    metadata={"memory_type": "imported_original", "track": "source"},
+                ):
+                    mandol_synced += 1
+    except Exception as exc:
+        warn(f"自动生成原始 markdown 失败: {exc}")
+    # 2) LLM 摘要
+    summary_path: str | None = None
+    summary_text: str | None = None
+    if req.build_mandol:
+        try:
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                summary = loop.run_until_complete(
+                    summary_generator.generate_for_document(
+                        title=info["metadata"].get("title") or info.get("filename", "imported_document"),
+                        raw_text=info.get("text", ""),
+                        source_doc=info.get("filename", ""),
+                        project_id=req.project_id,
+                    )
+                )
+            finally:
+                loop.close()
+            if summary:
+                summary_path = summary["rel_path"]
+                summary_text = summary.get("summary")
+                saved_paths.append(summary_path)
+                from ..services.mandol_service import mandol_service
+                if mandol_service.is_enabled and mandol_service.sync_document(
+                    summary_path, summary["content"],
+                    metadata={"memory_type": "imported_summary", "track": "summary"},
+                ):
+                    mandol_synced += 1
+        except Exception as exc:
+            warn(f"LLM 摘要生成失败: {exc}")
+    # 3) 保存 chunked 记忆文件
     for f in files:
         try:
             doc = memory_service.create_document(
@@ -136,7 +191,7 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                         mandol_synced += 1
         except Exception as exc:
             warn(f"Save failed for {f.rel_path}: {exc}")
-    # 触发高阶记忆构建
+    # 4) 触发高阶记忆构建
     if req.build_mandol and mandol_synced > 0:
         from ..services.mandol_service import mandol_service
         if mandol_service.is_enabled:
@@ -144,8 +199,20 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                 mandol_service.build_high_level(mode="auto")
             except Exception as exc:
                 warn(f"Build high level after import failed: {exc}")
+            # 5) 自动后台保存 snapshot（避免阻塞）
+            try:
+                mandol_service.save()
+            except Exception as exc:
+                warn(f"自动 save snapshot 失败: {exc}")
     db.audit("import", file_id, f"saved={len(saved_paths)}, mandol_synced={mandol_synced}")
-    return SaveResponse(saved_count=len(saved_paths), paths=saved_paths, mandol_synced=mandol_synced)
+    return SaveResponse(
+        saved_count=len(saved_paths),
+        paths=saved_paths,
+        mandol_synced=mandol_synced,
+        original_path=original_path,
+        summary_path=summary_path,
+        summary_text=summary_text,
+    )
 
 
 @router.delete("/{file_id}", response_model=StatusResponse)

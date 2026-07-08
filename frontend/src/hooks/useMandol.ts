@@ -18,6 +18,8 @@ import type {
   MandolAskResponse,
   BuildReportResponse,
   SnapshotResponse,
+  ExternalStoreStatus,
+  Neo4jSubgraph,
 } from "@/types";
 
 export function useMandol() {
@@ -30,6 +32,8 @@ export function useMandol() {
   const [subgraph, setSubgraph] = useState<SubgraphResponse | null>(null);
   const [traceResult, setTraceResult] = useState<TraceResponse | null>(null);
   const [relationships, setRelationships] = useState<RelationshipInfo[]>([]);
+  const [externalStatus, setExternalStatus] = useState<ExternalStoreStatus | null>(null);
+  const [neo4jSubgraph, setNeo4jSubgraph] = useState<Neo4jSubgraph | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -326,13 +330,53 @@ export function useMandol() {
   }, []);
 
   // ============ 持久化 ============
-  const saveSnapshot = useCallback(async (storagePath?: string) => {
+  const saveSnapshot = useCallback(async (storagePath?: string, wait = false) => {
     setIsLoading(true);
     setError(null);
     try {
-      return await api.post<SnapshotResponse>("mandol/save", { storage_path: storagePath });
+      return await api.post<SnapshotResponse>("mandol/save", { storage_path: storagePath, wait });
     } catch (err) {
       return handleErr(err, "保存失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const getSaveStatus = useCallback(async () => {
+    try {
+      return await api.get<{ in_progress: boolean; last_result: SnapshotResponse | null }>("mandol/save-status");
+    } catch (err) {
+      handleErr(err, "查询保存状态失败");
+      return null;
+    }
+  }, []);
+
+  const getExternalStatus = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await api.get<ExternalStoreStatus>("mandol/external-store-status");
+      setExternalStatus(data);
+      return data;
+    } catch (err) {
+      return handleErr(err, "查询外部存储状态失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const getNeo4jSubgraph = useCallback(async (centerUid?: string, limit = 200) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const url = centerUid
+        ? `mandol/neo4j/subgraph?center_uid=${encodeURIComponent(centerUid)}&limit=${limit}`
+        : `mandol/neo4j/subgraph?limit=${limit}`;
+      const data = await api.get<Neo4jSubgraph>(url);
+      setNeo4jSubgraph(data);
+      return data;
+    } catch (err) {
+      return handleErr(err, "查询 Neo4j 子图失败");
     } finally {
       setIsLoading(false);
     }
@@ -376,6 +420,8 @@ export function useMandol() {
     subgraph,
     traceResult,
     relationships,
+    externalStatus,
+    neo4jSubgraph,
     isLoading,
     error,
     // 统计
@@ -396,6 +442,7 @@ export function useMandol() {
     getEntitySubgraph,
     traceEvidence,
     traceCoref,
+    getNeo4jSubgraph,
     // 检索
     retrieve,
     // 问答
@@ -404,6 +451,8 @@ export function useMandol() {
     buildHighLevel,
     // 持久化
     saveSnapshot,
+    getSaveStatus,
+    getExternalStatus,
     flush,
     reconfigure,
   };

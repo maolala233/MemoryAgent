@@ -353,40 +353,74 @@ export default function ImportPage() {
 
           {/* Step 4: Save result */}
           {step === "save" && saved && (
-            <div className="bg-surface border border-border rounded-xl p-6 text-center">
-              <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-4">
-                <Icon
-                  name="check_circle"
-                  filled
-                  className="text-[32px] text-success"
-                />
+            <div className="bg-surface border border-border rounded-xl p-6">
+              <div className="text-center mb-4">
+                <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-4">
+                  <Icon
+                    name="check_circle"
+                    filled
+                    className="text-[32px] text-success"
+                  />
+                </div>
+                <h3 className="text-body-lg font-bold text-on-surface mb-1">
+                  导入完成
+                </h3>
+                <p className="text-body-md text-on-surface-variant">
+                  已保存 <strong>{saved.saved_count}</strong> 个记忆文件
+                  {saved.mandol_synced ? ` · Mandol 同步 ${saved.mandol_synced} 条` : ""}
+                </p>
               </div>
-              <h3 className="text-body-lg font-bold text-on-surface mb-1">
-                Import complete!
-              </h3>
-              <p className="text-body-md text-on-surface-variant mb-4">
-                Saved <strong>{saved.saved_count}</strong> memory file(s) to your
-                vault.
-              </p>
-              <div className="bg-surface-container-low rounded-lg p-3 mb-4 text-left max-h-48 overflow-y-auto">
-                {saved.paths.map((p) => (
-                  <p key={p} className="font-mono text-body-sm text-primary py-0.5">
-                    {p}
-                  </p>
-                ))}
-              </div>
+
+              {saved.original_path && (
+                <div className="bg-secondary-container rounded-lg p-3 mb-3">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Icon name="description" className="text-on-secondary-container text-[16px]" />
+                    <span className="font-bold text-on-secondary-container text-body-sm">原始文档</span>
+                  </div>
+                  <p className="font-mono text-label-sm text-on-secondary-container break-all">{saved.original_path}</p>
+                </div>
+              )}
+
+              {saved.summary_text && (
+                <details className="bg-primary-fixed/30 border border-primary/20 rounded-lg mb-3" open>
+                  <summary className="p-3 cursor-pointer flex items-center gap-2 font-bold text-on-surface text-body-sm">
+                    <Icon name="auto_awesome" className="text-primary text-[16px]" />
+                    关键信息摘要（LLM 生成）
+                    <span className="text-label-sm text-on-surface-variant ml-auto font-mono">{saved.summary_path}</span>
+                  </summary>
+                  <div className="px-3 pb-3 text-body-sm text-on-surface leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto custom-scrollbar">
+                    {saved.summary_text}
+                  </div>
+                </details>
+              )}
+
+              <details className="bg-surface-container-low rounded-lg mb-4">
+                <summary className="p-3 cursor-pointer text-body-sm font-bold text-on-surface">所有生成文件 ({saved.paths.length})</summary>
+                <div className="px-3 pb-3 text-left max-h-48 overflow-y-auto">
+                  {saved.paths.map((p) => (
+                    <p key={p} className="font-mono text-label-sm text-primary py-0.5 break-all">{p}</p>
+                  ))}
+                </div>
+              </details>
+
               <div className="flex justify-center gap-2">
                 <button
                   onClick={reset}
                   className="px-4 py-2 border border-border text-on-surface-variant hover:bg-surface-container-low rounded-lg font-medium"
                 >
-                  Import Another
+                  再导一份
                 </button>
+                <Link
+                  href="/build"
+                  className="px-4 py-2 border border-border text-on-surface rounded-lg font-medium hover:bg-surface-container-low"
+                >
+                  构建高阶记忆
+                </Link>
                 <Link
                   href="/memory"
                   className="px-4 py-2 bg-primary text-on-primary rounded-lg font-bold hover:opacity-90"
                 >
-                  View Vault
+                  查看记忆库
                 </Link>
               </div>
             </div>

@@ -8,7 +8,7 @@ import { Loading } from "@/components/shared/Loading";
 import { Pill } from "@/components/shared/Pill";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { api, ApiError } from "@/services/api";
-import type { MandolStatsResponse, MandolUnitInfo } from "@/types";
+import type { MandolStatsResponse, MandolUnitInfo, ExternalStoreStatus } from "@/types";
 
 /* ─── 横向统计卡片 ─── */
 function StatCard({
@@ -120,6 +120,7 @@ function RecentUnit({ unit }: { unit: MandolUnitInfo }) {
 export default function DashboardPage() {
   const [stats, setStats] = useState<MandolStatsResponse | null>(null);
   const [recentUnits, setRecentUnits] = useState<MandolUnitInfo[]>([]);
+  const [external, setExternal] = useState<ExternalStoreStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -128,14 +129,16 @@ export default function DashboardPage() {
       setIsLoading(true);
       setError(null);
       try {
-        const [s, units] = await Promise.all([
+        const [s, units, ext] = await Promise.all([
           api.get<MandolStatsResponse>("mandol/stats"),
           api
             .get<{ total: number; items: MandolUnitInfo[] }>("mandol/units?limit=8")
             .catch(() => ({ total: 0, items: [] })),
+          api.get<ExternalStoreStatus>("mandol/external-store-status").catch(() => null),
         ]);
         setStats(s);
         setRecentUnits(units.items || []);
+        setExternal(ext);
       } catch (err) {
         setError(err instanceof ApiError ? err.detail : "加载失败");
       } finally {
@@ -178,8 +181,8 @@ export default function DashboardPage() {
                 <StatCard icon="account_tree" label="基础记忆" value={stats.base_memory_count || 0} sub="图谱节点" accent="default" href="/graph" />
               </section>
 
-              {/* ── 第二行：Token + 系统状态 + 快速操作（三列平铺） ── */}
-              <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* ── 第二行：Token + 系统状态 + 外部存储 + 快速操作 ── */}
+              <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 {/* Token 用量 */}
                 <div className="bg-surface border border-border rounded-2xl p-5">
                   <div className="flex items-center gap-3 mb-4">
@@ -239,6 +242,48 @@ export default function DashboardPage() {
                     )}
                   </div>
                 </div>
+
+                {/* 外部存储状态 */}
+                {external && (
+                  <div className="bg-surface border border-border rounded-2xl p-5">
+                    <div className="flex items-center gap-3 mb-4">
+                      <div className="w-10 h-10 rounded-xl bg-secondary-container text-on-secondary-container flex items-center justify-center">
+                        <Icon name="storage" filled className="text-[20px]" />
+                      </div>
+                      <h3 className="text-body-lg font-bold text-on-surface">外部存储</h3>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-body-md text-on-surface-variant flex items-center gap-1">
+                          <Icon name="hub" className="text-[16px]" /> Neo4j
+                        </span>
+                        <Pill variant={external.neo4j.available ? "success" : "default"} size="md">
+                          {external.neo4j.available
+                            ? `${external.neo4j.nodes} 节点 · ${external.neo4j.edges} 边`
+                            : "离线"}
+                        </Pill>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-body-md text-on-surface-variant flex items-center gap-1">
+                          <Icon name="database" className="text-[16px]" /> Milvus
+                        </span>
+                        <Pill variant={external.milvus.available ? "success" : "default"} size="md">
+                          {external.milvus.available ? `${external.milvus.unit_count} 单元` : "离线"}
+                        </Pill>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-body-md text-on-surface-variant flex items-center gap-1">
+                          <Icon name="save" className="text-[16px]" /> Snapshot
+                        </span>
+                        <Pill variant={external.snapshot.exists ? "success" : "default"} size="md">
+                          {external.snapshot.exists
+                            ? `${(external.snapshot.size_bytes / 1024).toFixed(1)} KB`
+                            : "未保存"}
+                        </Pill>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* 快速操作 - 网格布局 */}
                 <div className="bg-surface border border-border rounded-2xl p-5">

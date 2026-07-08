@@ -94,6 +94,21 @@ class Settings(BaseSettings):
     mandol_reranker_remote_api_path: str = "/v1/rerank"
     mandol_reranker_remote_timeout: int = 60
 
+    # ---- Mandol 外部存储：Neo4j 图数据库 ----
+    mandol_neo4j_uri: str = "bolt://localhost:7687"
+    mandol_neo4j_user: str = "neo4j"
+    mandol_neo4j_password: str = "mandol123"
+    mandol_neo4j_database: str = "neo4j"
+
+    # ---- Mandol 外部存储：Milvus 向量数据库 ----
+    # 默认使用 milvus-lite 嵌入式（uri=本地 db 文件路径）。要切换到 Milvus server，
+    # 将 uri 改为 http://host:19530。
+    mandol_milvus_uri: str = "data/mandol/milvus.db"
+    mandol_milvus_user: str = ""
+    mandol_milvus_password: str = ""
+    mandol_milvus_db: str = ""
+    mandol_milvus_collection: str = "mandol_memory_units"
+
     # ---- Mandol 系统参数 ----
     mandol_chunk_max_tokens: int = 512
     mandol_session_time_gap_seconds: int = 1800

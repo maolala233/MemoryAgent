@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -75,6 +76,8 @@ class MandolService:
         self._lock = threading.RLock()
         self._init_attempted = False
         self._storage_root: Optional[str] = None
+        self._save_in_progress = threading.Event()
+        self._last_save_result: Optional[Dict[str, Any]] = None
 
     # ---------------- 生命周期 ----------------
     def initialize(self) -> bool:
@@ -107,7 +110,11 @@ class MandolService:
                 return False
 
     def _do_initialize(self) -> bool:
-        """执行真正的初始化。"""
+        """执行真正的初始化。
+
+        集成 Neo4j 图数据库 + Milvus Lite 向量数据库 + 持久化。
+        通过显式构造 store 注入到 SystemFactory.create，绕开默认的 in-memory 实现。
+        """
         from mandol import MemorySystem, MemorySystemConfig
         from mandol.infrastructure.system_factory import SystemFactory
 
@@ -118,6 +125,20 @@ class MandolService:
 
         # 构建 LLM provider（mandol 默认从环境变量读取，这里显式传入）
         llm_provider = self._build_llm_provider()
+
+        # 构建外部存储后端（Neo4j + Milvus Lite）
+        graph_store = None
+        unit_store = None
+        try:
+            graph_store = self._build_neo4j_graph_store()
+            info("Mandol 使用 Neo4j GraphStore")
+        except Exception as exc:
+            warn(f"Neo4j GraphStore 初始化失败，回退到 InMemoryGraphStore: {exc}")
+        try:
+            unit_store = self._build_milvus_unit_store(cfg.embedder_dim)
+            info(f"Mandol 使用 Milvus UnitStore (uri={settings.mandol_milvus_uri})")
+        except Exception as exc:
+            warn(f"Milvus UnitStore 初始化失败，回退到 InMemoryUnitStore: {exc}")
 
         # 尝试从已有快照加载，否则新建
         snapshot_file = Path(storage_root) / "snapshot.json"
@@ -133,6 +154,8 @@ class MandolService:
                     enable_persistence=settings.mandol_enable_persistence,
                     auto_save_interval=settings.mandol_auto_save_interval,
                     llm_provider=llm_provider,
+                    graph_store=graph_store,
+                    unit_store=unit_store,
                 )
         else:
             self._system = SystemFactory.create(
@@ -141,9 +164,42 @@ class MandolService:
                 enable_persistence=settings.mandol_enable_persistence,
                 auto_save_interval=settings.mandol_auto_save_interval,
                 llm_provider=llm_provider,
+                graph_store=graph_store,
+                unit_store=unit_store,
             )
             info(f"已创建新的 Mandol MemorySystem，存储目录: {storage_root}")
         return True
+
+    def _build_neo4j_graph_store(self) -> Any:
+        """构造 Neo4j GraphStore，从 settings 读取连接信息。"""
+        from mandol.infrastructure.neo4j_graph_store import Neo4jGraphStore
+        from mandol.infrastructure.config import Neo4jConfig
+
+        cfg = Neo4jConfig(
+            uri=settings.mandol_neo4j_uri,
+            user=settings.mandol_neo4j_user,
+            password=settings.mandol_neo4j_password,
+            database=settings.mandol_neo4j_database,
+        )
+        return Neo4jGraphStore(config=cfg)
+
+    def _build_milvus_unit_store(self, embedding_dim: int) -> Any:
+        """构造 Milvus UnitStore（支持 milvus-lite 嵌入式，uri=file path）。"""
+        from mandol.infrastructure.milvus_unit_store import MilvusUnitStore
+        from mandol.infrastructure.config import MilvusConfig
+
+        cfg = MilvusConfig(
+            uri=settings.mandol_milvus_uri,
+            user=settings.mandol_milvus_user,
+            password=settings.mandol_milvus_password,
+            db_name=settings.mandol_milvus_db,
+            collection=settings.mandol_milvus_collection,
+        )
+        return MilvusUnitStore(
+            config=cfg,
+            embedding_dim=embedding_dim,
+            auto_create_collection=True,
+        )
 
     def _build_config(self) -> Any:
         """根据 settings 构建 MemorySystemConfig。"""
@@ -799,18 +855,99 @@ class MandolService:
             return {"enabled": True, "error": str(exc)}
 
     # ---------------- 持久化 ----------------
-    def save(self, storage_path: Optional[str] = None) -> Dict[str, Any]:
-        """持久化记忆系统。"""
+    def save(self, storage_path: Optional[str] = None, wait: bool = False) -> Dict[str, Any]:
+        """持久化记忆系统。
+
+        为了避免大规模 snapshot 写入阻塞 API 请求，默认采用后台线程异步
+        写入，立即返回。传入 ``wait=True`` 时同步等待。
+        """
+        if self._save_in_progress.is_set() and not wait:
+            return {
+                "status": "busy",
+                "message": "snapshot 保存进行中",
+                "path": str(storage_path or (Path(self._storage_root or settings.mandol_storage_dir) / "snapshot.json")),
+            }
+
         system = self._require()
         path = storage_path or str(Path(self._storage_root or settings.mandol_storage_dir) / "snapshot.json")
-        result = system.save(path)
-        info(f"Mandol 记忆已保存到 {path}")
+
+        def _do_save() -> None:
+            self._save_in_progress.set()
+            try:
+                t0 = time.time()
+                result = system.save(path)
+                self._last_save_result = {
+                    "status": "saved",
+                    "path": path,
+                    "units": getattr(result, "units", 0) if result else 0,
+                    "spaces": getattr(result, "spaces", 0) if result else 0,
+                    "duration_seconds": round(time.time() - t0, 3),
+                    "saved_at": datetime.utcnow().isoformat(timespec="seconds"),
+                }
+                info(f"Mandol 记忆已异步保存到 {path}, 耗时={self._last_save_result['duration_seconds']}s")
+            except Exception as exc:
+                self._last_save_result = {
+                    "status": "failed",
+                    "error": str(exc),
+                    "path": path,
+                }
+                warn(f"异步保存失败: {exc}")
+            finally:
+                self._save_in_progress.clear()
+
+        if wait:
+            _do_save()
+            return self._last_save_result or {"status": "saved", "path": path}
+        else:
+            threading.Thread(target=_do_save, daemon=True).start()
+            return {"status": "pending", "path": path}
+
+    def save_status(self) -> Dict[str, Any]:
+        """查询最近一次 snapshot 保存状态。"""
         return {
-            "status": "saved",
-            "path": path,
-            "units": getattr(result, "units", 0) if result else 0,
-            "spaces": getattr(result, "spaces", 0) if result else 0,
+            "in_progress": self._save_in_progress.is_set(),
+            "last_result": self._last_save_result,
         }
+
+    # ---------------- 外部存储状态 ----------------
+    def external_store_status(self) -> Dict[str, Any]:
+        """查询 Neo4j + Milvus 实际状态（节点/边/集合统计）。"""
+        status: Dict[str, Any] = {
+            "neo4j": {"available": False, "nodes": 0, "edges": 0, "rel_types": []},
+            "milvus": {"available": False, "uri": settings.mandol_milvus_uri, "collection": settings.mandol_milvus_collection, "unit_count": 0},
+            "snapshot": {"path": str(Path(self._storage_root or settings.mandol_storage_dir) / "snapshot.json"), "exists": False, "size_bytes": 0},
+        }
+        # Neo4j
+        try:
+            from neo4j import GraphDatabase
+            d = GraphDatabase.driver(
+                settings.mandol_neo4j_uri,
+                auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+            )
+            with d.session(database=settings.mandol_neo4j_database) as s:
+                status["neo4j"]["nodes"] = s.run("MATCH (n) RETURN count(n) as c").single()["c"]
+                status["neo4j"]["edges"] = s.run("MATCH ()-[r]->() RETURN count(r) as c").single()["c"]
+                status["neo4j"]["rel_types"] = [r["relationshipType"] for r in s.run("CALL db.relationshipTypes()")]
+            d.close()
+            status["neo4j"]["available"] = True
+        except Exception as exc:
+            status["neo4j"]["error"] = str(exc)
+        # Milvus
+        try:
+            from pymilvus import MilvusClient
+            client = MilvusClient(uri=settings.mandol_milvus_uri)
+            if client.has_collection(settings.mandol_milvus_collection):
+                status["milvus"]["unit_count"] = client.get_collection_stats(settings.mandol_milvus_collection).get("row_count", 0)
+                status["milvus"]["available"] = True
+            client.close()
+        except Exception as exc:
+            status["milvus"]["error"] = str(exc)
+        # Snapshot
+        snap = Path(status["snapshot"]["path"])
+        if snap.exists():
+            status["snapshot"]["exists"] = True
+            status["snapshot"]["size_bytes"] = snap.stat().st_size
+        return status
 
     def load(self, storage_path: str) -> Dict[str, Any]:
         """从路径加载记忆系统。"""

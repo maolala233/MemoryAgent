@@ -242,6 +242,9 @@ class SaveResponse(BaseModel):
     saved_count: int
     paths: List[str]
     mandol_synced: int = 0
+    original_path: Optional[str] = None
+    summary_path: Optional[str] = None
+    summary_text: Optional[str] = None
 
 
 class UploadResponse(BaseModel):
@@ -505,6 +508,7 @@ class MandolMonitorResponse(BaseModel):
 # =====================================================================
 class SaveSnapshotRequest(BaseModel):
     storage_path: Optional[str] = None
+    wait: bool = False
 
 
 class LoadSnapshotRequest(BaseModel):
@@ -516,3 +520,7 @@ class SnapshotResponse(BaseModel):
     path: str
     units: int = 0
     spaces: int = 0
+    duration_seconds: Optional[float] = None
+    saved_at: Optional[str] = None
+    error: Optional[str] = None
+    message: Optional[str] = None

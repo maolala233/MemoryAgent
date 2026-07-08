@@ -426,10 +426,68 @@ def merge_events() -> MergeResponse:
 # =====================================================================
 @router.post("/save", response_model=SnapshotResponse)
 def save_snapshot(req: SaveSnapshotRequest) -> SnapshotResponse:
-    """持久化记忆系统。"""
+    """持久化记忆系统（默认后台异步执行，避免阻塞 API）。"""
     _require_enabled()
-    data = _safe_call(mandol_service.save, req.storage_path)
+    data = _safe_call(mandol_service.save, req.storage_path, wait=req.wait if hasattr(req, "wait") else False)
     return SnapshotResponse(**data)
+
+
+@router.get("/save-status")
+def save_snapshot_status() -> dict:
+    """查询最近一次 snapshot 保存状态。"""
+    _require_enabled()
+    return mandol_service.save_status()
+
+
+@router.get("/external-store-status")
+def external_store_status() -> dict:
+    """查询 Neo4j + Milvus + snapshot 实际状态。"""
+    _require_enabled()
+    return mandol_service.external_store_status()
+
+
+@router.get("/neo4j/subgraph")
+def neo4j_subgraph(
+    center_uid: Optional[str] = Query(None, description="中心节点 UID"),
+    limit: int = Query(200, ge=1, le=2000),
+) -> dict:
+    """从 Neo4j 读取全图或子图（用于图谱可视化）。"""
+    _require_enabled()
+    from ..config.settings import settings as _s
+    from neo4j import GraphDatabase as _GD
+    d = _GD.driver(_s.mandol_neo4j_uri, auth=(_s.mandol_neo4j_user, _s.mandol_neo4j_password))
+    try:
+        with d.session(database=_s.mandol_neo4j_database) as sess:
+            if center_uid:
+                q_nodes = (
+                    "MATCH (a {uid:$c})-[r*1..2]-(b) "
+                    "WITH collect(distinct a) + collect(distinct b) AS ns "
+                    "UNWIND ns AS n RETURN DISTINCT n.uid AS uid, labels(n) AS labels, properties(n) AS props LIMIT $lim"
+                )
+                q_edges = (
+                    "MATCH (a {uid:$c})-[r*1..2]-(b) "
+                    "WITH collect(distinct relationships(r)) AS rs "
+                    "UNWIND rs AS rel RETURN DISTINCT id(rel) AS id, type(rel) AS type, properties(rel) AS props LIMIT $lim"
+                )
+                nodes = [dict(r) for r in sess.run(q_nodes, c=center_uid, lim=limit)]
+                edges = [dict(r) for r in sess.run(q_edges, c=center_uid, lim=limit)]
+            else:
+                nodes = [
+                    dict(r) for r in sess.run(
+                        "MATCH (n) RETURN n.uid AS uid, labels(n) AS labels, properties(n) AS props LIMIT $lim",
+                        lim=limit,
+                    )
+                ]
+                edges = [
+                    dict(r) for r in sess.run(
+                        "MATCH (a)-[r]->(b) RETURN id(r) AS id, a.uid AS s, b.uid AS t, "
+                        "type(r) AS type, properties(r) AS props LIMIT $lim",
+                        lim=limit,
+                    )
+                ]
+            return {"nodes": nodes, "edges": edges, "center": center_uid}
+    finally:
+        d.close()
 
 
 @router.post("/load", response_model=SnapshotResponse)

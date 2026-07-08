@@ -163,6 +163,8 @@ class MemoryService:
         cache.invalidate_prefix("stats:")
         cache.invalidate_prefix("search:")
         db.audit("update", safe)
+        # 同步更新到 Mandol
+        self._sync_to_mandol(safe, body, frontmatter)
         return doc
 
     def delete_document(self, rel_path: str, soft: bool = True) -> None:

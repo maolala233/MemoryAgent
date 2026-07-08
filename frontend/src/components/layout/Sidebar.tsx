@@ -21,7 +21,6 @@ export function Sidebar() {
     { label: "记忆单元", href: "/units", icon: "memory" },
     { label: "记忆空间", href: "/spaces", icon: "workspaces" },
     { label: "知识图谱", href: "/graph", icon: "account_tree" },
-    { label: "关系管理", href: "/relationships", icon: "link" },
     { label: "记忆构建", href: "/build", icon: "construction" },
     { label: "文档导入", href: "/import", icon: "upload_file" },
     { label: "Agent", href: "/agents", icon: "neurology" },
@@ -29,7 +28,6 @@ export function Sidebar() {
 
   const FOOTER_NAV: NavItem[] = [
     { label: "系统设置", href: "/settings", icon: "settings" },
-    { label: "帮助支持", href: "/support", icon: "help" },
   ];
 
   const isActive = (href: string) => {
