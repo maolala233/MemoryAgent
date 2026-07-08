@@ -127,6 +127,10 @@ class MemoryService:
         cache.invalidate_prefix("stats:")
         cache.invalidate_prefix("search:")
         db.audit("create", safe)
+        
+        # Sync to Mandol if enabled
+        self._sync_to_mandol(safe, body, frontmatter)
+        
         return doc
 
     def update_document(self, rel_path: str, content: Optional[str] = None,
@@ -253,6 +257,15 @@ class MemoryService:
             self.create_document(rel, body, memory_type=mtype, track=track,
                                  summary=summary, keywords=[track, mtype])
         info(f"Seeded {len(seeds)} example memories")
+
+    def _sync_to_mandol(self, rel_path: str, body: str, frontmatter: Dict[str, Any]) -> None:
+        """Sync document to Mandol if enabled."""
+        try:
+            from .mandol_service import mandol_service
+            if mandol_service.is_enabled:
+                mandol_service.sync_document(rel_path, body, frontmatter)
+        except Exception as exc:
+            warn(f"Failed to sync {rel_path} to Mandol: {exc}")
 
 
 memory_service = MemoryService()

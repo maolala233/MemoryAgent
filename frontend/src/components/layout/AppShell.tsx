@@ -33,7 +33,7 @@ export function AppShell({
       )}
       <main
         className={[
-          "ml-[280px] h-screen flex",
+          "ml-[160px] h-screen flex w-[calc(100%-220px)]",
           noTopBar ? "" : "pt-touch-target",
         ].join(" ")}
       >

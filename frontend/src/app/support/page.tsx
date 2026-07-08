@@ -31,7 +31,7 @@ export default function SupportPage() {
   return (
     <AppShell title="Support" subtitle="Help & documentation">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-3xl mx-auto px-panel-padding py-8 space-y-6">
+        <div className="w-full px-panel-padding py-8 space-y-6">
           <div className="bg-gradient-to-br from-primary to-primary-container text-on-primary rounded-xl p-6">
             <div className="flex items-center gap-3 mb-2">
               <Icon name="help" filled className="text-[28px]" />

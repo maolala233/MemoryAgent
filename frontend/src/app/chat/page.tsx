@@ -11,13 +11,7 @@ import { MarkdownRenderer } from "@/components/shared/MarkdownRenderer";
 import { useChat } from "@/hooks/useChat";
 import type { AgentInfo, ChatMessage } from "@/types";
 
-function MessageBubble({
-  msg,
-  agent,
-}: {
-  msg: ChatMessage;
-  agent?: AgentInfo;
-}) {
+function MessageBubble({ msg, agent }: { msg: ChatMessage; agent?: AgentInfo }) {
   const isUser = msg.role === "user";
   return (
     <div className={`flex gap-4 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -34,33 +28,36 @@ function MessageBubble({
         />
       </div>
       <div className={`space-y-2 max-w-[80%] ${isUser ? "items-end" : ""}`}>
-        {/* Memories cited */}
+        {/* 记忆引用 */}
         {!isUser && msg.memories && msg.memories.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
-            {msg.memories.slice(0, 4).map((m) => (
-              <a
-                key={m.rel_path}
-                href={`/memory/${encodeURIComponent(m.rel_path)}`}
-                className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-fixed border border-primary/20 rounded-full text-label-sm text-primary hover:opacity-80"
-              >
-                <Icon name="link" className="text-[12px]" />
-                {m.title || m.rel_path.split("/").pop()}
-              </a>
-            ))}
-            {msg.memories.length > 4 && (
-              <Pill variant="primary" size="sm">
-                +{msg.memories.length - 4} more
-              </Pill>
+            {msg.memories.slice(0, 6).map((m, i) => {
+              const label = m.uid || m.title || m.rel_path?.split("/").pop() || `记忆${i + 1}`;
+              const href = m.uid ? `/units?uid=${encodeURIComponent(m.uid)}` : `/memory/${encodeURIComponent(m.rel_path)}`;
+              return (
+                <a
+                  key={i}
+                  href={href}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-primary-fixed border border-primary/20 rounded-full text-label-sm text-primary hover:opacity-80 max-w-[200px] truncate"
+                  title={m.text || m.snippet || label}
+                >
+                  <Icon name="link" className="text-[12px]" />
+                  <span className="truncate">{label}</span>
+                </a>
+              );
+            })}
+            {msg.memories.length > 6 && (
+              <Pill variant="primary" size="sm">+{msg.memories.length - 6} 更多</Pill>
             )}
           </div>
         )}
 
-        {/* Thinking indicator */}
+        {/* 推理过程 */}
         {!isUser && msg.thinking && (
           <details className="bg-surface-container-low border border-border rounded-lg px-3 py-2">
             <summary className="text-label-md text-on-surface-variant cursor-pointer flex items-center gap-1.5">
               <Icon name="psychology" className="text-[14px]" />
-              Reasoning trace
+              推理过程
             </summary>
             <p className="mt-2 text-body-sm text-on-surface-variant italic whitespace-pre-wrap">
               {msg.thinking}
@@ -68,7 +65,7 @@ function MessageBubble({
           </details>
         )}
 
-        {/* Message body */}
+        {/* 消息内容 */}
         <div
           className={[
             "p-4 rounded-xl",
@@ -102,7 +99,7 @@ function MessageBubble({
 
 export default function ChatPage() {
   return (
-    <Suspense fallback={<Loading size="lg" label="Loading chat..." />}>
+    <Suspense fallback={<Loading size="lg" label="加载对话中..." />}>
       <ChatContent />
     </Suspense>
   );
@@ -136,20 +133,20 @@ function ChatContent() {
 
   return (
     <AppShell
-      title={currentAgent?.name || "Chat"}
-      subtitle={currentAgent?.role}
+      title={currentAgent?.name || "智能问答"}
+      subtitle={currentAgent?.role || "基于记忆的智能问答"}
       rightSlot={
         <button
           onClick={clearMessages}
           className="p-2 text-on-surface-variant hover:text-error transition-colors"
-          title="Clear conversation"
+          title="清除对话"
         >
           <Icon name="delete_sweep" />
         </button>
       }
     >
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Agent picker bar */}
+        {/* 助手选择栏 */}
         <div className="border-b border-border px-panel-padding py-2 flex items-center gap-3 bg-surface">
           <div className="relative">
             <button
@@ -158,7 +155,7 @@ function ChatContent() {
             >
               <Icon name="neurology" filled className="text-[20px] text-primary" />
               <span className="text-body-md font-medium">
-                {currentAgent?.name || "Select agent"}
+                {currentAgent?.name || "选择助手"}
               </span>
               <Icon name="expand_more" className="text-[18px]" />
             </button>
@@ -176,56 +173,41 @@ function ChatContent() {
                       a.id === agentId ? "bg-primary-fixed/50" : "",
                     ].join(" ")}
                   >
-                    <Icon
-                      name="smart_toy"
-                      filled
-                      className="text-[18px] text-primary mt-0.5"
-                    />
+                    <Icon name="smart_toy" filled className="text-[18px] text-primary mt-0.5" />
                     <div>
-                      <p className="text-body-md font-bold text-on-surface">
-                        {a.name}
-                      </p>
-                      <p className="text-label-sm text-on-surface-variant">
-                        {a.role}
-                      </p>
+                      <p className="text-body-md font-bold text-on-surface">{a.name}</p>
+                      <p className="text-label-sm text-on-surface-variant">{a.role}</p>
                     </div>
                   </button>
                 ))}
                 {agents.length === 0 && (
-                  <p className="px-3 py-2 text-body-sm text-on-surface-variant">
-                    No agents configured.
-                  </p>
+                  <p className="px-3 py-2 text-body-sm text-on-surface-variant">未配置助手</p>
                 )}
               </div>
             )}
           </div>
           {currentAgent && (
             <div className="flex items-center gap-2">
-              <Pill variant="info" size="sm">
-                {currentAgent.llm_provider}
-              </Pill>
+              <Pill variant="info" size="sm">{currentAgent.llm_provider}</Pill>
               <Pill size="sm">{currentAgent.memory_strategy}</Pill>
               <span className="text-label-sm text-on-surface-variant">
-                Limit: {currentAgent.memory_limit}
+                记忆上限: {currentAgent.memory_limit}
               </span>
             </div>
           )}
         </div>
 
-        {/* Messages */}
-        <div
-          ref={scrollRef}
-          className="flex-1 overflow-y-auto custom-scrollbar px-12 py-8"
-        >
+        {/* 消息列表 */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar px-12 py-8">
           <div className="max-w-[1000px] mx-auto space-y-8">
             {messages.length === 0 && (
               <EmptyState
                 icon="smart_toy"
-                title="Start a conversation"
+                title="开始对话"
                 description={
                   currentAgent
-                    ? `${currentAgent.name} is ready. Ask anything about your memories.`
-                    : "Select an agent to start chatting."
+                    ? `${currentAgent.name} 已就绪，询问任何关于记忆的问题。`
+                    : "选择助手开始对话。"
                 }
               />
             )}
@@ -243,12 +225,9 @@ function ChatContent() {
           </div>
         </div>
 
-        {/* Composer */}
+        {/* 输入框 */}
         <div className="border-t border-border px-panel-padding py-4 bg-surface">
-          <form
-            onSubmit={onSubmit}
-            className="max-w-[1000px] mx-auto flex items-end gap-2"
-          >
+          <form onSubmit={onSubmit} className="max-w-[1000px] mx-auto flex items-end gap-2">
             <div className="flex-1 relative">
               <textarea
                 value={input}
@@ -259,7 +238,7 @@ function ChatContent() {
                     onSubmit(e);
                   }
                 }}
-                placeholder="Ask your agent... (Enter to send, Shift+Enter for newline)"
+                placeholder="输入问题... (Enter 发送, Shift+Enter 换行)"
                 rows={1}
                 className="w-full px-4 py-3 bg-surface-container-low border border-border rounded-xl focus:ring-2 focus:ring-primary focus:border-primary outline-none text-body-md resize-none max-h-32"
                 style={{ minHeight: "48px" }}
@@ -270,12 +249,8 @@ function ChatContent() {
               disabled={!input.trim() || isStreaming}
               className="px-4 py-3 bg-primary text-on-primary rounded-xl font-bold hover:opacity-90 transition-opacity disabled:opacity-40 flex items-center gap-2"
             >
-              {isStreaming ? (
-                <Loading size="sm" />
-              ) : (
-                <Icon name="send" className="text-[20px]" />
-              )}
-              Send
+              {isStreaming ? <Loading size="sm" /> : <Icon name="send" className="text-[20px]" />}
+              发送
             </button>
           </form>
         </div>

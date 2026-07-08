@@ -79,10 +79,39 @@ class DocumentParser:
                     "pages": 0}
         doc = docx.Document(str(file_path))
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        text = "\n\n".join(paragraphs)
+        # 遍历文档 body 中的所有元素，按出现顺序混合段落与表格
+        from docx.oxml.ns import qn
+        body = doc.element.body
+        ordered_chunks: list[str] = []
+        para_iter = iter(doc.paragraphs)
+        tbl_iter = iter(doc.tables)
+        for child in body.iterchildren():
+            tag = child.tag
+            if tag == qn("w:p"):
+                try:
+                    p = next(para_iter)
+                    t = p.text.strip()
+                    if t:
+                        ordered_chunks.append(t)
+                except StopIteration:
+                    pass
+            elif tag == qn("w:tbl"):
+                try:
+                    tbl = next(tbl_iter)
+                    for row in tbl.rows:
+                        cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+                        if cells:
+                            ordered_chunks.append(" | ".join(cells))
+                except StopIteration:
+                    pass
+        if not ordered_chunks:
+            ordered_chunks = paragraphs
+        text = "\n\n".join(ordered_chunks)
         return {
             "text": text,
-            "metadata": {"filename": file_path.name, "format": "docx"},
+            "metadata": {"filename": file_path.name, "format": "docx",
+                         "paragraph_count": len(paragraphs),
+                         "table_count": len(doc.tables)},
             "pages": 1,
         }
 

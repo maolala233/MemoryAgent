@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/layout/AppShell";
+import { I18nProvider } from "@/hooks/useI18n";
 
 export const metadata: Metadata = {
-  title: "Codex Memory | Agent Memory Vault",
+  title: "Memory Agent | AI Memory Platform",
   description:
-    "A codex-style memory platform for agents — search, curate, and converse with your persisted knowledge.",
+    "An AI-powered memory platform — search, curate, and converse with your persisted knowledge.",
 };
 
 export default function RootLayout({
@@ -35,7 +36,9 @@ export default function RootLayout({
         />
       </head>
       <body className="bg-background text-on-surface font-body-md overflow-hidden">
-        <AppShell>{children}</AppShell>
+        <I18nProvider>
+          <AppShell>{children}</AppShell>
+        </I18nProvider>
       </body>
     </html>
   );

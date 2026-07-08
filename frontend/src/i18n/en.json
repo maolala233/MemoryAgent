@@ -1,0 +1,268 @@
+{
+  "app": {
+    "name": "Memory Agent",
+    "subtitle": "Agent: Online"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "memoryVault": "Memory Vault",
+    "search": "Search",
+    "entities": "Entities",
+    "events": "Events",
+    "graph": "Graph",
+    "causalChain": "Causal Chain",
+    "chatWithAgent": "Chat with Agent",
+    "importDocument": "Import Document",
+    "agents": "Agents",
+    "settings": "Settings",
+    "support": "Support",
+    "newEntry": "New Entry"
+  },
+  "common": {
+    "loading": "Loading...",
+    "error": "Error",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "search": "Search",
+    "submit": "Submit",
+    "reset": "Reset",
+    "confirm": "Confirm",
+    "back": "Back",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "success": "Success",
+    "failed": "Failed",
+    "noData": "No data",
+    "actions": "Actions"
+  },
+  "search": {
+    "title": "Search",
+    "subtitle": "Cross-memory intelligent retrieval",
+    "placeholder": "Search across your code, documents, and memories...",
+    "strategy": "Strategy",
+    "limit": "Results",
+    "filters": "Filters",
+    "track": "Track",
+    "memoryType": "Memory Type",
+    "status": "Status",
+    "projectId": "Project",
+    "results": "Results",
+    "noResults": "No results found",
+    "noResultsDescription": "No memories matched \"{query}\". Try a different query or strategy.",
+    "recentSearches": "Recent searches",
+    "startSearching": "Start searching",
+    "startDescription": "Find memories by keyword, semantic similarity, or hybrid retrieval.",
+    "strategies": {
+      "keyword": "Keyword",
+      "semantic": "Semantic",
+      "hybrid": "Hybrid",
+      "mandol": "Mandol",
+      "entity": "Entity",
+      "event": "Event",
+      "graph": "Graph",
+      "causal": "Causal"
+    },
+    "trackOptions": {
+      "all": "All Tracks",
+      "project": "Project",
+      "decision": "Decision",
+      "meeting": "Meeting",
+      "note": "Note",
+      "reference": "Reference"
+    },
+    "memoryTypeOptions": {
+      "all": "All Types",
+      "document": "Document",
+      "note": "Note",
+      "decision": "Decision",
+      "meeting": "Meeting",
+      "project": "Project",
+      "reference": "Reference"
+    },
+    "statusOptions": {
+      "all": "All Status",
+      "active": "Active",
+      "archived": "Archived",
+      "draft": "Draft"
+    }
+  },
+  "memory": {
+    "title": "Memory Vault",
+    "subtitle": "Browse and manage your memory documents",
+    "newDocument": "New Document",
+    "newFolder": "New Folder",
+    "rescan": "Rescan",
+    "emptyTitle": "Memory vault is empty",
+    "emptyDescription": "Create your first document or import existing files to get started",
+    "created": "Created",
+    "modified": "Modified",
+    "size": "Size",
+    "deleteConfirm": "Are you sure you want to delete this document? This action cannot be undone.",
+    "deleteSuccess": "Document deleted",
+    "createSuccess": "Document created",
+    "updateSuccess": "Document updated"
+  },
+  "entities": {
+    "title": "Knowledge Entities",
+    "subtitle": "Browse extracted entities from your memory",
+    "searchPlaceholder": "Search entities...",
+    "noEntities": "No entities found",
+    "noEntitiesDescription": "Start by adding documents to your memory vault. Entities will be automatically extracted.",
+    "description": "Description",
+    "aliases": "Aliases",
+    "metadata": "Metadata",
+    "viewGraph": "View Graph"
+  },
+  "events": {
+    "title": "Events",
+    "subtitle": "Browse extracted events and causal relationships",
+    "searchPlaceholder": "Search events...",
+    "noEvents": "No events found",
+    "noEventsDescription": "Start by adding documents to your memory vault. Events will be automatically extracted.",
+    "traceCausal": "Trace Causal Chain"
+  },
+  "graph": {
+    "title": "Knowledge Graph",
+    "subtitle": "Visualize semantic relationships",
+    "noEntity": "No entity selected",
+    "noEntityDescription": "Select an entity from the Entities page to visualize its relationships.",
+    "hops": "Hops",
+    "nodes": "Nodes",
+    "edges": "Edges",
+    "relationships": "Relationships",
+    "confidence": "Confidence"
+  },
+  "causal": {
+    "title": "Causal Chain Tracing",
+    "subtitle": "Trace cause-and-effect relationships",
+    "queryEvent": "Query Event",
+    "queryPlaceholder": "Enter event name or description...",
+    "maxHops": "Max Hops",
+    "direction": "Direction",
+    "trace": "Trace Causal Chain",
+    "startTracing": "Start tracing",
+    "startDescription": "Enter an event name or description to trace its causal chain.",
+    "noChain": "No causal chain found",
+    "noChainDescription": "No causal relationships were found for this query.",
+    "relationship": "Relationship",
+    "stepsFound": "{count} steps found",
+    "directions": {
+      "both": "Both directions",
+      "forward": "Forward only",
+      "backward": "Backward only"
+    }
+  },
+  "chat": {
+    "title": "Chat with Agent",
+    "subtitle": "Converse with your memory vault",
+    "placeholder": "Type your question...",
+    "send": "Send",
+    "thinking": "Thinking...",
+    "noMessages": "Start a conversation",
+    "noMessagesDescription": "Ask a question to explore your memory vault"
+  },
+  "import": {
+    "title": "Import Document",
+    "subtitle": "Import documents from external sources",
+    "dragDrop": "Drag and drop files here, or click to select",
+    "supportedFormats": "Supports Markdown (.md), PDF (.pdf), Word (.docx) files",
+    "importing": "Importing...",
+    "importSuccess": "Import successful",
+    "importFailed": "Import failed"
+  },
+  "agents": {
+    "title": "Agents",
+    "subtitle": "Manage your AI agents",
+    "createAgent": "Create Agent",
+    "noAgents": "No agents yet",
+    "noAgentsDescription": "Create your first agent to get started"
+  },
+  "settings": {
+    "title": "Settings",
+    "subtitle": "System configuration",
+    "systemInfo": "System Information",
+    "modelConfig": "Model Configuration",
+    "llmConfig": "LLM Configuration",
+    "embeddingConfig": "Embedding Configuration",
+    "rerankerConfig": "Reranker Configuration",
+    "mandolConfig": "Mandol Configuration",
+    "actions": "Actions",
+    "rescanVault": "Rescan Vault",
+    "rescanDescription": "Rescanning re-indexes all markdown files in the vault directory, picking up external changes.",
+    "configFiles": "Configuration Files",
+    "configFilesDescription": "Edit these YAML files in backend/config/ to customize",
+    "provider": "Provider",
+    "model": "Model",
+    "baseUrl": "Base URL",
+    "apiKey": "API Key",
+    "device": "Device",
+    "dimension": "Dimension",
+    "saveConfig": "Save Configuration",
+    "saveSuccess": "Configuration saved",
+    "saveFailed": "Failed to save",
+    "providers": {
+      "mock": "Mock",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "anthropic": "Anthropic",
+      "custom": "Custom (OpenAI Compatible)",
+      "local": "Local Model"
+    },
+    "llmProviders": {
+      "mock": "Mock",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "anthropic": "Anthropic",
+      "custom": "Custom (OpenAI Compatible)",
+      "vllm": "vLLM"
+    },
+    "embeddingProviders": {
+      "mock": "Mock",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "custom": "Custom (OpenAI Compatible)",
+      "local": "Local (Sentence-Transformers)"
+    },
+    "rerankerProviders": {
+      "mock": "Mock",
+      "crossEncoder": "Cross-Encoder (Local)",
+      "custom": "Custom (OpenAI Compatible)"
+    },
+    "fields": {
+      "provider": "Provider",
+      "model": "Model Name",
+      "baseUrl": "API Base URL",
+      "apiKey": "API Key",
+      "modelId": "Model ID",
+      "temperature": "Temperature",
+      "maxTokens": "Max Tokens",
+      "dimension": "Vector Dimension",
+      "device": "Device",
+      "chunkSize": "Chunk Size",
+      "topK": "Top-K",
+      "threshold": "Threshold",
+      "batchSize": "Batch Size"
+    },
+    "hints": {
+      "baseUrl": "e.g., http://localhost:11434/v1",
+      "apiKey": "Leave empty for no authentication",
+      "model": "e.g., gpt-4o-mini, llama3.1",
+      "dimension": "Vector dimension, must match model",
+      "device": "CPU or CUDA (e.g., cuda:0)"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "subtitle": "System overview",
+    "totalMemories": "Total Memories",
+    "totalEntities": "Entities",
+    "totalEvents": "Events",
+    "recentActivity": "Recent Activity",
+    "systemStatus": "System Status",
+    "storageUsage": "Storage Usage",
+    "searchStats": "Search Stats"
+  }
+}

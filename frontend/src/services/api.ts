@@ -57,7 +57,11 @@ export const api = {
       method: "PUT",
       body: body ? JSON.stringify(body) : undefined,
     }),
-  del: <T>(endpoint: string) => request<T>(endpoint, { method: "DELETE" }),
+  del: <T>(endpoint: string, body?: Json) =>
+    request<T>(endpoint, {
+      method: "DELETE",
+      body: body ? JSON.stringify(body) : undefined,
+    }),
 };
 
 export function wsUrl(path: string): string {

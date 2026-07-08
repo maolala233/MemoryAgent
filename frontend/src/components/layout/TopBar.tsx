@@ -41,7 +41,7 @@ export function TopBar({
   };
 
   return (
-    <header className="fixed top-0 right-0 left-[280px] h-touch-target bg-surface border-b border-border flex items-center justify-between px-panel-padding z-40">
+    <header className="fixed top-0 right-0 left-[220px] h-touch-target bg-surface border-b border-border flex items-center justify-between px-panel-padding z-40">
       <div className="flex items-center gap-4 min-w-0">
         {title && (
           <div className="flex items-center gap-2 min-w-0">
@@ -51,7 +51,7 @@ export function TopBar({
             {subtitle && (
               <>
                 <div className="h-4 w-px bg-border" />
-                <span className="text-label-md text-on-surface-variant uppercase tracking-wider truncate">
+                <span className="text-label-md text-on-surface-variant truncate">
                   {subtitle}
                 </span>
               </>
@@ -69,7 +69,7 @@ export function TopBar({
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Global search... (⌘K)"
+              placeholder="搜索记忆..."
               className="w-full pl-10 pr-12 py-2 bg-surface-container-low border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-body-md transition-all"
             />
             <kbd className="absolute right-3 top-1/2 -translate-y-1/2 text-label-sm text-on-surface-variant bg-surface px-2 py-0.5 rounded border border-border">
@@ -81,15 +81,6 @@ export function TopBar({
 
       <div className="flex items-center gap-2">
         {rightSlot}
-        <button className="p-2 text-on-surface-variant hover:text-primary transition-colors">
-          <Icon name="notifications" />
-        </button>
-        <button className="p-2 text-on-surface-variant hover:text-primary transition-colors">
-          <Icon name="settings" />
-        </button>
-        <div className="w-8 h-8 rounded-full bg-primary-container overflow-hidden border border-border flex items-center justify-center">
-          <Icon name="person" filled className="text-on-primary text-[18px]" />
-        </div>
       </div>
     </header>
   );

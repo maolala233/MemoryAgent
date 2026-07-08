@@ -1,434 +1,332 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Icon } from "@/components/shared/Icon";
 import { Loading } from "@/components/shared/Loading";
 import { Pill } from "@/components/shared/Pill";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { useStats } from "@/hooks/useStats";
+import { api, ApiError } from "@/services/api";
+import type { MandolStatsResponse, MandolUnitInfo } from "@/types";
 
-function formatBytes(bytes: number): string {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
-}
-
-function formatDate(iso?: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
+/* ─── 横向统计卡片 ─── */
 function StatCard({
   icon,
   label,
   value,
-  trend,
-  variant = "default",
+  sub,
+  accent = "primary",
+  href,
 }: {
   icon: string;
   label: string;
   value: string | number;
-  trend?: string;
-  variant?: "default" | "primary" | "warning" | "error";
+  sub?: string;
+  accent?: "primary" | "success" | "warning" | "info" | "default";
+  href?: string;
 }) {
-  const accent = {
-    default: "bg-surface-container text-on-surface-variant",
+  const colors: Record<string, string> = {
     primary: "bg-primary-fixed text-primary",
+    success: "bg-success/10 text-success",
     warning: "bg-warning/10 text-warning",
-    error: "bg-error/10 text-error",
-  }[variant];
-  return (
-    <div className="bg-surface border border-border rounded-xl p-5 hover:border-primary/40 transition-colors">
-      <div className="flex items-start justify-between mb-4">
-        <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${accent}`}>
-          <Icon name={icon} filled className="text-[22px]" />
+    info: "bg-info/10 text-info",
+    default: "bg-surface-container text-on-surface-variant",
+  };
+
+  const inner = (
+    <div className="bg-surface border border-border rounded-2xl p-5 hover:border-primary/50 hover:shadow-md transition-all cursor-pointer group h-full">
+      <div className="flex items-center gap-4">
+        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 ${colors[accent]}`}>
+          <Icon name={icon} filled className="text-[28px]" />
         </div>
-        {trend && (
-          <Pill variant="success" size="sm">
-            <Icon name="trending_up" className="text-[12px]" />
-            {trend}
-          </Pill>
+        <div className="flex-1 min-w-0">
+          <p className="text-display-sm font-bold text-on-surface leading-none">{value}</p>
+          <p className="text-body-md font-medium text-on-surface mt-1">{label}</p>
+          {sub && <p className="text-label-md text-on-surface-variant mt-0.5">{sub}</p>}
+        </div>
+        {href && (
+          <Icon
+            name="arrow_forward"
+            className="text-on-surface-variant group-hover:text-primary transition-colors text-[20px] flex-shrink-0"
+          />
         )}
       </div>
-      <p className="text-headline-lg font-headline-lg font-bold text-on-surface">
-        {value}
-      </p>
-      <p className="text-body-sm text-on-surface-variant mt-1">{label}</p>
     </div>
   );
+
+  if (href) return <Link href={href} className="block h-full">{inner}</Link>;
+  return inner;
 }
 
-function DistributionBar({
-  label,
-  count,
-  total,
-  color = "bg-primary",
+/* ── 快速入口 ─── */
+function QuickAction({
+  icon,
+  title,
+  desc,
+  href,
 }: {
-  label: string;
-  count: number;
-  total: number;
-  color?: string;
+  icon: string;
+  title: string;
+  desc: string;
+  href: string;
 }) {
-  const pct = total > 0 ? Math.round((count / total) * 100) : 0;
   return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <span className="text-body-md text-on-surface font-medium">{label}</span>
-        <span className="text-label-md text-on-surface-variant">
-          {count} · {pct}%
-        </span>
+    <Link
+      href={href}
+      className="bg-surface border border-border rounded-2xl p-4 hover:border-primary hover:shadow-md transition-all group flex items-center gap-3"
+    >
+      <div className="w-11 h-11 rounded-xl bg-primary-fixed text-primary flex items-center justify-center flex-shrink-0">
+        <Icon name={icon} filled className="text-[22px]" />
       </div>
-      <div className="h-2 bg-surface-container rounded-full overflow-hidden">
-        <div
-          className={`h-full ${color} transition-all duration-500`}
-          style={{ width: `${pct}%` }}
-        />
+      <div className="min-w-0 flex-1">
+        <p className="text-body-lg font-bold text-on-surface">{title}</p>
+        <p className="text-body-sm text-on-surface-variant">{desc}</p>
       </div>
-    </div>
+      <Icon
+        name="arrow_forward"
+        className="text-on-surface-variant group-hover:text-primary transition-colors text-[20px] flex-shrink-0"
+      />
+    </Link>
   );
 }
 
-const TRACK_COLORS: Record<string, string> = {
-  project: "bg-primary",
-  learning: "bg-success",
-  research: "bg-warning",
-  reference: "bg-secondary",
-  personal: "bg-error",
-};
+/* ─── 最近单元列表 ─── */
+function RecentUnit({ unit }: { unit: MandolUnitInfo }) {
+  const raw = unit.raw_data as Record<string, string> | undefined;
+  const meta = unit.metadata as Record<string, string> | undefined;
+  const name = raw?.entity_name || raw?.event_name || unit.uid;
+  const type = meta?.type || meta?.category || "单元";
+  return (
+    <Link
+      href={`/units?uid=${encodeURIComponent(unit.uid)}`}
+      className="block p-3 rounded-xl hover:bg-surface-container-low transition-colors group"
+    >
+      <div className="flex items-center gap-3">
+        <Icon
+          name={type === "entity" ? "person" : type === "event" ? "event" : "description"}
+          className="text-on-surface-variant group-hover:text-primary text-[20px] flex-shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <p className="text-body-md font-medium text-on-surface truncate">{name}</p>
+          <p className="text-label-md text-on-surface-variant truncate">{unit.text}</p>
+        </div>
+        <Pill size="sm" variant="info">{type}</Pill>
+      </div>
+    </Link>
+  );
+}
 
 export default function DashboardPage() {
-  const { overview, distribution, timeline, openLoops, recent, isLoading, error } = useStats();
+  const [stats, setStats] = useState<MandolStatsResponse | null>(null);
+  const [recentUnits, setRecentUnits] = useState<MandolUnitInfo[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const totalByTrack = distribution
-    ? Object.values(distribution.by_track).reduce((a, b) => a + b, 0)
-    : 0;
-  const totalByType = distribution
-    ? Object.values(distribution.by_type).reduce((a, b) => a + b, 0)
-    : 0;
+  useEffect(() => {
+    (async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const [s, units] = await Promise.all([
+          api.get<MandolStatsResponse>("mandol/stats"),
+          api
+            .get<{ total: number; items: MandolUnitInfo[] }>("mandol/units?limit=8")
+            .catch(() => ({ total: 0, items: [] })),
+        ]);
+        setStats(s);
+        setRecentUnits(units.items || []);
+      } catch (err) {
+        setError(err instanceof ApiError ? err.detail : "加载失败");
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, []);
 
-  const maxTimeline = Math.max(1, ...timeline.map((p) => p.doc_count));
+  const quickActions = [
+    { icon: "search", title: "记忆检索", desc: "多策略全息检索", href: "/search" },
+    { icon: "smart_toy", title: "智能问答", desc: "基于记忆的对话", href: "/chat" },
+    { icon: "upload_file", title: "文档导入", desc: "PDF / DOCX / MD", href: "/import" },
+    { icon: "build", title: "记忆构建", desc: "提取实体与事件", href: "/build" },
+    { icon: "account_tree", title: "知识图谱", desc: "图谱浏览与溯源", href: "/graph" },
+    { icon: "settings", title: "系统设置", desc: "模型与参数配置", href: "/settings" },
+  ];
 
   return (
-    <AppShell title="Dashboard" subtitle="Memory Vault Overview">
-      <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-max-content-width mx-auto px-panel-padding py-8 space-y-8">
+    <AppShell title="仪表盘" subtitle="Mandol 记忆平台总览">
+      <div className="flex-1 overflow-y-auto custom-scrollbar w-full">
+        <div className="px-8 py-6 space-y-5">
           {error && (
-            <div className="bg-error/10 border border-error/20 text-error rounded-lg p-4 flex items-center gap-2">
+            <div className="bg-error/10 border border-error/20 text-error rounded-xl p-4 flex items-center gap-2">
               <Icon name="error" filled />
               <span className="text-body-md">{error}</span>
             </div>
           )}
 
-          {isLoading && !overview && <Loading size="lg" label="Loading dashboard..." />}
+          {isLoading && !stats && <Loading size="lg" label="加载仪表盘..." />}
 
-          {/* Stat cards */}
-          {overview && (
-            <section className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <StatCard
-                icon="description"
-                label="Total Memories"
-                value={overview.total_docs}
-                trend="+12%"
-                variant="primary"
-              />
-              <StatCard
-                icon="database"
-                label="Vault Size"
-                value={formatBytes(overview.total_size)}
-              />
-              <StatCard
-                icon="pending_actions"
-                label="Open Loops"
-                value={overview.open_loops_count}
-                variant={overview.open_loops_count > 0 ? "warning" : "default"}
-              />
-              <StatCard
-                icon="update"
-                label="Last Updated"
-                value={formatDate(overview.last_updated)}
-              />
-            </section>
-          )}
+          {stats && (
+            <>
+              {/* ── 核心指标卡片：6列平铺 ── */}
+              <section className="grid grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-4">
+                <StatCard icon="memory" label="记忆单元" value={stats.total_units || 0} sub="总计" accent="primary" href="/units" />
+                <StatCard icon="hub" label="记忆空间" value={stats.total_spaces || 0} sub="总计" accent="info" href="/spaces" />
+                <StatCard icon="person" label="实体" value={stats.entity_count || 0} sub="已提取" accent="success" href="/entities" />
+                <StatCard icon="event" label="事件" value={stats.event_count || 0} sub="已提取" accent="warning" href="/events" />
+                <StatCard icon="summarize" label="摘要" value={stats.summary_count || 0} sub="已生成" accent="primary" href="/build" />
+                <StatCard icon="account_tree" label="基础记忆" value={stats.base_memory_count || 0} sub="图谱节点" accent="default" href="/graph" />
+              </section>
 
-          {/* Distribution + Timeline */}
-          <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* By Track */}
-            <div className="bg-surface border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-body-lg font-bold text-on-surface">
-                  Distribution by Track
-                </h3>
-                <Icon name="donut_large" className="text-on-surface-variant" />
-              </div>
-              <div className="space-y-3">
-                {distribution &&
-                  Object.entries(distribution.by_track).map(([track, count]) => (
-                    <DistributionBar
-                      key={track}
-                      label={track}
-                      count={count}
-                      total={totalByTrack}
-                      color={TRACK_COLORS[track] || "bg-primary"}
-                    />
-                  ))}
-                {distribution && totalByTrack === 0 && (
-                  <p className="text-body-sm text-on-surface-variant py-4 text-center">
-                    No memories yet.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* By Type */}
-            <div className="bg-surface border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-body-lg font-bold text-on-surface">
-                  Distribution by Type
-                </h3>
-                <Icon name="category" className="text-on-surface-variant" />
-              </div>
-              <div className="space-y-3">
-                {distribution &&
-                  Object.entries(distribution.by_type).map(([type, count]) => (
-                    <DistributionBar
-                      key={type}
-                      label={type}
-                      count={count}
-                      total={totalByType}
-                      color="bg-success"
-                    />
-                  ))}
-                {distribution && totalByType === 0 && (
-                  <p className="text-body-sm text-on-surface-variant py-4 text-center">
-                    No memories yet.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Timeline */}
-            <div className="bg-surface border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-body-lg font-bold text-on-surface">
-                  Activity (30d)
-                </h3>
-                <Icon name="timeline" className="text-on-surface-variant" />
-              </div>
-              <div className="flex items-end justify-between gap-0.5 h-32">
-                {timeline.length === 0 && (
-                  <p className="text-body-sm text-on-surface-variant m-auto">
-                    No activity recorded.
-                  </p>
-                )}
-                {timeline.map((p, i) => (
-                  <div
-                    key={i}
-                    className="flex-1 bg-primary/70 hover:bg-primary rounded-t transition-colors"
-                    style={{
-                      height: `${(p.doc_count / maxTimeline) * 100}%`,
-                      minHeight: p.doc_count > 0 ? "4px" : "0",
-                    }}
-                    title={`${p.date}: ${p.doc_count} new`}
-                  />
-                ))}
-              </div>
-              <p className="text-label-sm text-on-surface-variant mt-3 text-center">
-                {timeline.length > 0 && (
-                  <>
-                    {timeline[0].date} → {timeline[timeline.length - 1].date}
-                  </>
-                )}
-              </p>
-            </div>
-          </section>
-
-          {/* Recent + Open Loops */}
-          <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {/* Recent memories */}
-            <div className="bg-surface border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-body-lg font-bold text-on-surface">Recent Memories</h3>
-                <Link
-                  href="/memory"
-                  className="text-label-md text-primary hover:underline flex items-center gap-1"
-                >
-                  View all <Icon name="arrow_forward" className="text-[14px]" />
-                </Link>
-              </div>
-              <div className="space-y-2">
-                {recent?.items.map((m) => (
-                  <Link
-                    key={m.rel_path}
-                    href={`/memory/${encodeURIComponent(m.rel_path)}`}
-                    className="block p-3 rounded-lg hover:bg-surface-container-low transition-colors group"
-                  >
-                    <div className="flex items-start gap-3">
-                      <Icon
-                        name="description"
-                        className="text-on-surface-variant group-hover:text-primary text-[20px] mt-0.5"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-body-md font-medium text-on-surface truncate">
-                          {m.title || m.rel_path}
-                        </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Pill variant="info" size="sm">
-                            {m.track}
-                          </Pill>
-                          <Pill size="sm">{m.memory_type}</Pill>
-                          <span className="text-label-sm text-outline ml-auto">
-                            {formatDate(m.updated_at || m.indexed_at)}
-                          </span>
-                        </div>
-                      </div>
+              {/* ── 第二行：Token + 系统状态 + 快速操作（三列平铺） ── */}
+              <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                {/* Token 用量 */}
+                <div className="bg-surface border border-border rounded-2xl p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-primary-fixed text-primary flex items-center justify-center">
+                      <Icon name="token" filled className="text-[20px]" />
                     </div>
+                    <h3 className="text-body-lg font-bold text-on-surface">Token 用量</h3>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-body-sm text-on-surface-variant">输入</span>
+                      <span className="text-headline-md font-bold text-on-surface">
+                        {(stats.token_usage?.prompt_tokens ?? 0).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-body-sm text-on-surface-variant">输出</span>
+                      <span className="text-headline-md font-bold text-on-surface">
+                        {(stats.token_usage?.completion_tokens ?? 0).toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between border-t border-border pt-3">
+                      <span className="text-body-md font-medium text-on-surface-variant">总计</span>
+                      <span className="text-display-sm font-bold text-primary">
+                        {(stats.token_usage?.total_tokens ?? 0).toLocaleString()}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 系统状态 */}
+                <div className="bg-surface border border-border rounded-2xl p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-info/10 text-info flex items-center justify-center">
+                      <Icon name="info" filled className="text-[20px]" />
+                    </div>
+                    <h3 className="text-body-lg font-bold text-on-surface">系统状态</h3>
+                  </div>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-body-md text-on-surface-variant">引擎</span>
+                      <Pill variant={stats.enabled ? "success" : "default"} size="md">
+                        {stats.enabled ? "已启用" : "未启用"}
+                      </Pill>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-body-md text-on-surface-variant">数据状态</span>
+                      <Pill variant={stats.dirty ? "warning" : "success"} size="md">
+                        {stats.dirty ? "有未保存变更" : "已同步"}
+                      </Pill>
+                    </div>
+                    {stats.error && (
+                      <div className="flex items-center justify-between">
+                        <span className="text-body-md text-on-surface-variant">错误</span>
+                        <Pill variant="error" size="md">{stats.error}</Pill>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 快速操作 - 网格布局 */}
+                <div className="bg-surface border border-border rounded-2xl p-5">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-xl bg-warning/10 text-warning flex items-center justify-center">
+                      <Icon name="bolt" filled className="text-[20px]" />
+                    </div>
+                    <h3 className="text-body-lg font-bold text-on-surface">快速操作</h3>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {quickActions.map((a) => (
+                      <Link
+                        key={a.href}
+                        href={a.href}
+                        className="flex items-center gap-2 p-2 rounded-lg hover:bg-surface-container-low transition-colors group"
+                      >
+                        <div className="w-8 h-8 rounded-lg bg-primary-fixed text-primary flex items-center justify-center flex-shrink-0">
+                          <Icon name={a.icon} filled className="text-[16px]" />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-body-sm font-bold text-on-surface truncate">{a.title}</p>
+                          <p className="text-label-sm text-on-surface-variant truncate">{a.desc}</p>
+                        </div>
+                      </Link>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
+              {/* ── 最近记忆单元（全宽） ── */}
+              <section className="bg-surface border border-border rounded-2xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-primary-fixed text-primary flex items-center justify-center">
+                      <Icon name="history" filled className="text-[20px]" />
+                    </div>
+                    <h3 className="text-body-lg font-bold text-on-surface">最近记忆单元</h3>
+                  </div>
+                  <Link
+                    href="/units"
+                    className="text-body-sm text-primary hover:underline flex items-center gap-1"
+                  >
+                    查看全部 <Icon name="arrow_forward" className="text-[14px]" />
                   </Link>
-                ))}
-                {recent && recent.items.length === 0 && (
+                </div>
+                {recentUnits.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    {recentUnits.map((u) => {
+                      const raw = u.raw_data as Record<string, string> | undefined;
+                      const meta = u.metadata as Record<string, string> | undefined;
+                      const name = raw?.entity_name || raw?.event_name || u.uid;
+                      const type = meta?.type || meta?.category || "单元";
+                      return (
+                        <Link
+                          key={u.uid}
+                          href={`/units?uid=${encodeURIComponent(u.uid)}`}
+                          className="block p-4 rounded-xl bg-surface-container-low hover:bg-surface-container-high hover:border-primary transition-all group border border-transparent"
+                        >
+                          <div className="flex items-center gap-2 mb-2">
+                            <Icon
+                              name={type === "entity" ? "person" : type === "event" ? "event" : "description"}
+                              className="text-on-surface-variant group-hover:text-primary text-[18px] flex-shrink-0"
+                            />
+                            <p className="text-body-md font-bold text-on-surface truncate">{name}</p>
+                          </div>
+                          <p className="text-label-md text-on-surface-variant line-clamp-2">{u.text}</p>
+                          <div className="mt-2">
+                            <Pill size="sm" variant="info">{type}</Pill>
+                          </div>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : (
                   <EmptyState
                     icon="inbox"
-                    title="No memories yet"
-                    description="Import a document or create a new entry to populate your vault."
+                    title="暂无记忆单元"
+                    description="上传文档或手动创建单元开始构建记忆。"
                     action={
-                      <Link
-                        href="/import"
-                        className="text-body-md text-primary hover:underline"
-                      >
-                        Import Document →
+                      <Link href="/import" className="text-body-md text-primary hover:underline">
+                        上传文档 →
                       </Link>
                     }
                   />
                 )}
-              </div>
-            </div>
-
-            {/* Open loops */}
-            <div className="bg-surface border border-border rounded-xl p-5">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-body-lg font-bold text-on-surface">Open Loops</h3>
-                <Link
-                  href="/memory?filter=open-loops"
-                  className="text-label-md text-primary hover:underline flex items-center gap-1"
-                >
-                  Resolve <Icon name="arrow_forward" className="text-[14px]" />
-                </Link>
-              </div>
-              <div className="space-y-2">
-                {openLoops.map((loop, i) => (
-                  <Link
-                    key={i}
-                    href={`/memory/${encodeURIComponent(loop.path)}`}
-                    className="block p-3 rounded-lg hover:bg-surface-container-low transition-colors"
-                  >
-                    <div className="flex items-start gap-3">
-                      <Icon
-                        name={
-                          loop.priority === "high"
-                            ? "priority_high"
-                            : "radio_button_unchecked"
-                        }
-                        filled={loop.priority === "high"}
-                        className={`text-[20px] mt-0.5 ${
-                          loop.priority === "high" ? "text-error" : "text-on-surface-variant"
-                        }`}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-body-md text-on-surface">{loop.item}</p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <Pill variant="warning" size="sm">
-                            {loop.kind}
-                          </Pill>
-                          <span className="text-label-sm text-outline truncate">
-                            {loop.title}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </Link>
-                ))}
-                {openLoops.length === 0 && (
-                  <EmptyState
-                    icon="check_circle"
-                    title="All clear"
-                    description="No open loops detected in your memory vault."
-                  />
-                )}
-              </div>
-            </div>
-          </section>
-
-          {/* Quick actions */}
-          <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Link
-              href="/search"
-              className="bg-surface border border-border rounded-xl p-5 hover:border-primary transition-colors group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-primary-fixed text-primary flex items-center justify-center">
-                  <Icon name="search" filled />
-                </div>
-                <div>
-                  <p className="text-body-md font-bold text-on-surface">Global Search</p>
-                  <p className="text-body-sm text-on-surface-variant">
-                    Hybrid keyword + semantic
-                  </p>
-                </div>
-                <Icon
-                  name="arrow_forward"
-                  className="ml-auto text-on-surface-variant group-hover:text-primary"
-                />
-              </div>
-            </Link>
-            <Link
-              href="/chat"
-              className="bg-surface border border-border rounded-xl p-5 hover:border-primary transition-colors group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-primary-fixed text-primary flex items-center justify-center">
-                  <Icon name="smart_toy" filled />
-                </div>
-                <div>
-                  <p className="text-body-md font-bold text-on-surface">Chat with Agent</p>
-                  <p className="text-body-sm text-on-surface-variant">
-                    Retrieval-augmented dialogue
-                  </p>
-                </div>
-                <Icon
-                  name="arrow_forward"
-                  className="ml-auto text-on-surface-variant group-hover:text-primary"
-                />
-              </div>
-            </Link>
-            <Link
-              href="/import"
-              className="bg-surface border border-border rounded-xl p-5 hover:border-primary transition-colors group"
-            >
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-primary-fixed text-primary flex items-center justify-center">
-                  <Icon name="upload_file" filled />
-                </div>
-                <div>
-                  <p className="text-body-md font-bold text-on-surface">Import Document</p>
-                  <p className="text-body-sm text-on-surface-variant">
-                    PDF / DOCX / MD → Memory
-                  </p>
-                </div>
-                <Icon
-                  name="arrow_forward"
-                  className="ml-auto text-on-surface-variant group-hover:text-primary"
-                />
-              </div>
-            </Link>
-          </section>
+              </section>
+            </>
+          )}
         </div>
       </div>
     </AppShell>

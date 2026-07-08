@@ -65,7 +65,8 @@ class DocToMemoryConverter:
             action_items = _extract_action_items(chunk.text)
             summary = chunk.text[:160].replace("\n", " ").strip()
             slug = _slugify(chunk.section or title_base)
-            filename = f"{slug}.md"
+            # 加入 chunk_index 保证每个 chunk 生成独立文件
+            filename = f"{slug}_p{chunk.index:02d}.md"
             rel_path = f"imports/{_slugify(title_base)}/{filename}"
             frontmatter = {
                 "memory_type": memory_type,

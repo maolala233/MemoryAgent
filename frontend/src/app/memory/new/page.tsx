@@ -82,7 +82,7 @@ export default function NewMemoryPage() {
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <form
           onSubmit={onSubmit}
-          className="max-w-3xl mx-auto px-panel-padding py-8 space-y-6"
+          className="w-full px-panel-padding py-8 space-y-6"
         >
           {error && (
             <div className="bg-error/10 border border-error/20 text-error rounded-lg p-3 flex items-center gap-2">

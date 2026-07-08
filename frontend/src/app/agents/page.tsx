@@ -55,7 +55,7 @@ export default function AgentsPage() {
   return (
     <AppShell title="Agents" subtitle={`${agents.length} configured`}>
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-max-content-width mx-auto px-panel-padding py-8 space-y-6">
+        <div className="w-full px-panel-padding py-8 space-y-6">
           {error && (
             <div className="bg-error/10 border border-error/20 text-error rounded-lg p-3 flex items-center gap-2">
               <Icon name="error" filled />

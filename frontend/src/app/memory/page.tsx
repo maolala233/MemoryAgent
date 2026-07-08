@@ -83,7 +83,7 @@ function MemoryVaultContent() {
   return (
     <AppShell title="Memory Vault" subtitle={`${data?.total ?? 0} documents`}>
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-max-content-width mx-auto px-panel-padding py-8 space-y-6">
+        <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Toolbar */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[240px]">

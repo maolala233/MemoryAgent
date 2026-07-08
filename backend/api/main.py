@@ -1,4 +1,4 @@
-"""FastAPI application entrypoint."""
+"""FastAPI 应用入口。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -8,9 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ..config.settings import apply_env_overrides, settings
-from ..routers import agents, chat, documents, memory, search, stats
+from ..routers import agents, chat, documents, mandol, memory, search, stats
+from ..routers import settings as settings_router
 from ..services.agent_service import agent_service
 from ..services.background_service import background_service
+from ..services.mandol_service import mandol_service
 from ..services.memory_service import memory_service
 from ..utils.logger import info, setup_logging
 from .websocket_manager import ws_manager
@@ -21,26 +23,38 @@ async def lifespan(app: FastAPI):
     apply_env_overrides(settings)
     settings.ensure_directories()
     setup_logging(settings.log_level)
-    info("Starting Codex Memory backend")
+    info("启动记忆智能问答平台后端")
+
+    # 初始化 Mandol 记忆引擎
+    if settings.mandol_enabled:
+        info("正在初始化 Mandol 记忆引擎...")
+        if mandol_service.initialize():
+            info("Mandol 记忆引擎已启用（懒加载，首次使用时初始化）")
+        else:
+            info("Mandol 初始化标记失败，继续启动")
+
     memory_service.ensure_seed_data()
-    # Re-index any existing vault files into SQLite on boot
+    # 启动时重新索引已有的 vault 文件到 SQLite
     if settings.vault_dir.exists() and any(settings.vault_dir.rglob("*.md")):
         try:
             memory_service.rescan_vault()
         except Exception as exc:
-            info(f"Initial rescan skipped: {exc}")
+            info(f"初始重扫描已跳过: {exc}")
     agent_service.ensure_loaded()
     background_service.start_default()
     yield
+    # 关闭 Mandol
+    if mandol_service.is_enabled:
+        mandol_service.shutdown()
     background_service.stop()
-    info("Shutdown complete")
+    info("关闭完成")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Codex Memory",
-        description="Long-term memory platform for LLM agents (FastAPI backend).",
-        version="0.1.0",
+        title="记忆智能问答平台",
+        description="基于 Mandol 的记忆构建、检索与智能问答平台",
+        version="0.2.0",
         lifespan=lifespan,
     )
 
@@ -58,6 +72,8 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(stats.router)
     app.include_router(documents.router)
+    app.include_router(mandol.router)
+    app.include_router(settings_router.router)
 
     @app.get("/api/health")
     def health() -> dict:
@@ -67,36 +83,36 @@ def create_app() -> FastAPI:
             "db": str(settings.db_path),
             "active_connections": ws_manager.get_active_connections(),
             "agents": len(agent_service.list_agents()),
+            "mandol_enabled": mandol_service.is_enabled,
+            "mandol_ready": mandol_service.is_ready,
         }
 
     @app.get("/api/system")
     def system() -> dict:
-        from ..services.llm_adapter import LLMFactory, get_embedding_provider
-        from ..services.config_loader import get_models_config
-        from ..database import db
-        cfg = get_models_config()
         stats = memory_service.get_stats()
+        mandol_stats = mandol_service.get_stats()
         return {
             "status": "ok",
-            "version": "0.1.0",
+            "version": "0.2.0",
             "vault_dir": str(settings.vault_dir),
             "db_path": str(settings.db_path),
-            "llm_provider": cfg.get("default_provider", settings.default_llm_provider),
-            "embedding_provider": settings.embedding_provider,
-            "embedding_dim": settings.embedding_dim,
-            "providers": list(cfg.get("providers", {}).keys()),
-            "agents_count": len(agent_service.list_agents()),
+            "mandol_enabled": settings.mandol_enabled,
+            "mandol_ready": mandol_service.is_ready,
+            "llm_model": settings.mandol_llm_model,
+            "embedder_model": settings.mandol_embedder_model,
+            "reranker_model": settings.mandol_reranker_model,
             "docs_count": stats.get("total_docs", 0),
+            "mandol_units": mandol_stats.get("total_units", 0),
         }
 
     @app.get("/")
     def root() -> dict:
-        return {"name": "Codex Memory API", "docs": "/docs", "health": "/api/health"}
+        return {"name": "记忆智能问答平台 API", "docs": "/docs", "health": "/api/health"}
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request, exc):  # type: ignore[no-untyped-def]
         from ..utils.logger import error
-        error("Unhandled exception", exc=exc)
+        error("未处理的异常", exc=exc)
         return JSONResponse(
             status_code=500,
             content={"detail": str(exc), "type": exc.__class__.__name__},

@@ -70,3 +70,11 @@ def get_agents_config() -> Dict[str, Any]:
 
 def get_retrieval_config() -> Dict[str, Any]:
     return config_loader.load_retrieval()
+
+
+def save_models_config(data: Dict[str, Any]) -> None:
+    """Persist model configuration to models.yaml."""
+    path = config_loader.config_dir / "models.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)

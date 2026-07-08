@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, use } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
@@ -29,9 +29,9 @@ function formatBytes(bytes: number): string {
 export default function MemoryDetailPage({
   params,
 }: {
-  params: Promise<{ path: string[] }>;
+  params: { path: string[] };
 }) {
-  const { path } = use(params);
+  const { path } = params;
   const router = useRouter();
   const decodedPath = path.map(encodeURIComponent).join("/");
   // The catch-all gives encoded segments joined by /. We need the decoded path.
@@ -104,7 +104,7 @@ export default function MemoryDetailPage({
       }
     >
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-max-content-width mx-auto px-panel-padding py-8">
+        <div className="w-full px-panel-padding py-8">
           {isLoading && !doc && <Loading size="lg" label="Loading memory..." />}
 
           {error && !doc && (

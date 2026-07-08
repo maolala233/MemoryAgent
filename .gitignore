@@ -41,3 +41,5 @@ yarn-error.log*
 
 # uploads
 uploads/
+sample/
+.venv/

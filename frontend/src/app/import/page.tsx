@@ -120,7 +120,7 @@ export default function ImportPage() {
   return (
     <AppShell title="Import Document" subtitle="PDF / DOCX / MD → Memory">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
-        <div className="max-w-3xl mx-auto px-panel-padding py-8 space-y-6">
+        <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Step indicator */}
           <StepIndicator current={step} progress={progress} />
 

@@ -21,7 +21,7 @@ from ..models.schemas import (
     StatusResponse,
     UploadResponse,
 )
-from ..services.chunking_service import chunking_service
+from ..services.chunking_service import chunking_service, Chunk
 from ..services.doc_to_memory import doc_to_memory
 from ..services.document_parser import document_parser
 from ..services.memory_service import memory_service
@@ -89,7 +89,7 @@ def convert_to_memory(file_id: str, req: ConvertRequest) -> ConvertResponse:
     if "chunks" not in info:
         parse(file_id)
         info = _FILE_REGISTRY[file_id]
-    chunks = [chunking_service.Chunk(c["text"], c["section"], c["tokens"], c["index"])
+    chunks = [Chunk(c["text"], c["section"], c["tokens"], c["index"])
               for c in info["chunks"]]
     files = doc_to_memory.convert_chunks(
         chunks, info["metadata"],
@@ -109,6 +109,7 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
         raise HTTPException(status_code=404, detail="File not found")
     files = req.memory_files or info.get("memory_files", [])
     saved_paths: list[str] = []
+    mandol_synced = 0
     for f in files:
         try:
             doc = memory_service.create_document(
@@ -120,10 +121,31 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                 keywords=f.frontmatter.get("keywords", []),
             )
             saved_paths.append(doc["rel_path"])
+            # 同步到 Mandol
+            if req.build_mandol:
+                from ..services.mandol_service import mandol_service
+                if mandol_service.is_enabled:
+                    if mandol_service.sync_document(
+                        doc["rel_path"], f.content,
+                        metadata={
+                            "memory_type": f.frontmatter.get("memory_type", "imported_document"),
+                            "track": f.frontmatter.get("track", "note"),
+                            "title": doc.get("title"),
+                        },
+                    ):
+                        mandol_synced += 1
         except Exception as exc:
             warn(f"Save failed for {f.rel_path}: {exc}")
-    db.audit("import", file_id, f"saved={len(saved_paths)}")
-    return SaveResponse(saved_count=len(saved_paths), paths=saved_paths)
+    # 触发高阶记忆构建
+    if req.build_mandol and mandol_synced > 0:
+        from ..services.mandol_service import mandol_service
+        if mandol_service.is_enabled:
+            try:
+                mandol_service.build_high_level(mode="auto")
+            except Exception as exc:
+                warn(f"Build high level after import failed: {exc}")
+    db.audit("import", file_id, f"saved={len(saved_paths)}, mandol_synced={mandol_synced}")
+    return SaveResponse(saved_count=len(saved_paths), paths=saved_paths, mandol_synced=mandol_synced)
 
 
 @router.delete("/{file_id}", response_model=StatusResponse)

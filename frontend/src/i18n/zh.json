@@ -1,0 +1,268 @@
+{
+  "app": {
+    "name": "Memory Agent",
+    "subtitle": "Agent: Online"
+  },
+  "nav": {
+    "dashboard": "仪表盘",
+    "memoryVault": "记忆库",
+    "search": "搜索",
+    "entities": "实体",
+    "events": "事件",
+    "graph": "图谱",
+    "causalChain": "因果链",
+    "chatWithAgent": "智能对话",
+    "importDocument": "导入文档",
+    "agents": "智能体",
+    "settings": "设置",
+    "support": "帮助",
+    "newEntry": "新建记忆"
+  },
+  "common": {
+    "loading": "加载中...",
+    "error": "错误",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "create": "创建",
+    "search": "搜索",
+    "submit": "提交",
+    "reset": "重置",
+    "confirm": "确认",
+    "back": "返回",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "success": "成功",
+    "failed": "失败",
+    "noData": "暂无数据",
+    "actions": "操作"
+  },
+  "search": {
+    "title": "搜索",
+    "subtitle": "跨记忆库智能检索",
+    "placeholder": "在代码、文档和记忆中搜索...",
+    "strategy": "检索策略",
+    "limit": "结果数量",
+    "filters": "筛选条件",
+    "track": "分类",
+    "memoryType": "记忆类型",
+    "status": "状态",
+    "projectId": "项目",
+    "results": "结果",
+    "noResults": "未找到结果",
+    "noResultsDescription": "没有记忆匹配 \"{query}\"。尝试不同的查询或策略。",
+    "recentSearches": "最近搜索",
+    "startSearching": "开始搜索",
+    "startDescription": "通过关键词、语义相似度或混合检索查找记忆。",
+    "strategies": {
+      "keyword": "关键词",
+      "semantic": "语义",
+      "hybrid": "混合",
+      "mandol": "Mandol",
+      "entity": "实体",
+      "event": "事件",
+      "graph": "图谱",
+      "causal": "因果"
+    },
+    "trackOptions": {
+      "all": "全部分类",
+      "project": "项目",
+      "decision": "决策",
+      "meeting": "会议",
+      "note": "笔记",
+      "reference": "参考"
+    },
+    "memoryTypeOptions": {
+      "all": "全部类型",
+      "document": "文档",
+      "note": "笔记",
+      "decision": "决策",
+      "meeting": "会议",
+      "project": "项目",
+      "reference": "参考"
+    },
+    "statusOptions": {
+      "all": "全部状态",
+      "active": "活跃",
+      "archived": "归档",
+      "draft": "草稿"
+    }
+  },
+  "memory": {
+    "title": "记忆库",
+    "subtitle": "浏览和管理您的记忆文档",
+    "newDocument": "新建文档",
+    "newFolder": "新建文件夹",
+    "rescan": "重新扫描",
+    "emptyTitle": "记忆库为空",
+    "emptyDescription": "创建第一个文档或导入现有文件开始使用",
+    "created": "创建于",
+    "modified": "修改于",
+    "size": "大小",
+    "deleteConfirm": "确定要删除此文档吗？此操作不可撤销。",
+    "deleteSuccess": "文档已删除",
+    "createSuccess": "文档已创建",
+    "updateSuccess": "文档已更新"
+  },
+  "entities": {
+    "title": "知识实体",
+    "subtitle": "浏览从记忆中提取的实体",
+    "searchPlaceholder": "搜索实体...",
+    "noEntities": "未找到实体",
+    "noEntitiesDescription": "向记忆库添加文档后，实体将自动提取",
+    "description": "描述",
+    "aliases": "别名",
+    "metadata": "元数据",
+    "viewGraph": "查看图谱"
+  },
+  "events": {
+    "title": "事件",
+    "subtitle": "浏览提取的事件和因果关系",
+    "searchPlaceholder": "搜索事件...",
+    "noEvents": "未找到事件",
+    "noEventsDescription": "向记忆库添加文档后，事件将自动提取",
+    "traceCausal": "追踪因果链"
+  },
+  "graph": {
+    "title": "知识图谱",
+    "subtitle": "可视化语义关系",
+    "noEntity": "未选择实体",
+    "noEntityDescription": "从实体页面选择实体以可视化其关系",
+    "hops": "跳数",
+    "nodes": "节点",
+    "edges": "边",
+    "relationships": "关系",
+    "confidence": "置信度"
+  },
+  "causal": {
+    "title": "因果链追踪",
+    "subtitle": "追踪因果关系",
+    "queryEvent": "查询事件",
+    "queryPlaceholder": "输入事件名称或描述...",
+    "maxHops": "最大跳数",
+    "direction": "方向",
+    "trace": "追踪因果链",
+    "startTracing": "开始追踪",
+    "startDescription": "输入事件名称或描述以追踪其因果链",
+    "noChain": "未找到因果链",
+    "noChainDescription": "未找到此查询的因果关系",
+    "relationship": "关系",
+    "stepsFound": "找到 {count} 个步骤",
+    "directions": {
+      "both": "双向",
+      "forward": "仅正向",
+      "backward": "仅反向"
+    }
+  },
+  "chat": {
+    "title": "智能对话",
+    "subtitle": "与您的记忆库对话",
+    "placeholder": "输入您的问题...",
+    "send": "发送",
+    "thinking": "思考中...",
+    "noMessages": "开始对话",
+    "noMessagesDescription": "输入问题以探索您的记忆库"
+  },
+  "import": {
+    "title": "导入文档",
+    "subtitle": "从外部来源导入文档",
+    "dragDrop": "拖放文件到此处，或点击选择",
+    "supportedFormats": "支持 Markdown (.md)、PDF (.pdf)、Word (.docx) 文件",
+    "importing": "导入中...",
+    "importSuccess": "导入成功",
+    "importFailed": "导入失败"
+  },
+  "agents": {
+    "title": "智能体",
+    "subtitle": "管理您的 AI 智能体",
+    "createAgent": "创建智能体",
+    "noAgents": "暂无智能体",
+    "noAgentsDescription": "创建第一个智能体开始使用"
+  },
+  "settings": {
+    "title": "设置",
+    "subtitle": "系统配置",
+    "systemInfo": "系统信息",
+    "modelConfig": "模型配置",
+    "llmConfig": "大语言模型配置",
+    "embeddingConfig": "Embedding 模型配置",
+    "rerankerConfig": "Reranker 模型配置",
+    "mandolConfig": "Mandol 配置",
+    "actions": "操作",
+    "rescanVault": "重新扫描记忆库",
+    "rescanDescription": "重新索引记忆库中的所有 Markdown 文件，拾取外部更改",
+    "configFiles": "配置文件",
+    "configFilesDescription": "编辑以下 YAML 文件以自定义配置",
+    "provider": "服务商",
+    "model": "模型",
+    "baseUrl": "API 地址",
+    "apiKey": "API 密钥",
+    "device": "设备",
+    "dimension": "维度",
+    "saveConfig": "保存配置",
+    "saveSuccess": "配置已保存",
+    "saveFailed": "保存失败",
+    "providers": {
+      "mock": "模拟 (Mock)",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "anthropic": "Anthropic",
+      "custom": "自定义 (OpenAI 兼容)",
+      "local": "本地模型"
+    },
+    "llmProviders": {
+      "mock": "模拟 (Mock)",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "anthropic": "Anthropic",
+      "custom": "自定义 (OpenAI 兼容)",
+      "vllm": "vLLM"
+    },
+    "embeddingProviders": {
+      "mock": "模拟 (Mock)",
+      "ollama": "Ollama",
+      "openai": "OpenAI",
+      "custom": "自定义 (OpenAI 兼容)",
+      "local": "本地模型 (Sentence-Transformers)"
+    },
+    "rerankerProviders": {
+      "mock": "模拟 (Mock)",
+      "crossEncoder": "Cross-Encoder (本地)",
+      "custom": "自定义 (OpenAI 兼容)"
+    },
+    "fields": {
+      "provider": "服务商",
+      "model": "模型名称",
+      "baseUrl": "API 地址",
+      "apiKey": "API 密钥",
+      "modelId": "模型 ID",
+      "temperature": "温度",
+      "maxTokens": "最大 Token 数",
+      "dimension": "向量维度",
+      "device": "运行设备",
+      "chunkSize": "分块大小",
+      "topK": "Top-K",
+      "threshold": "阈值",
+      "batchSize": "批处理大小"
+    },
+    "hints": {
+      "baseUrl": "例如: http://localhost:11434/v1",
+      "apiKey": "留空表示不使用认证",
+      "model": "例如: gpt-4o-mini, llama3.1",
+      "dimension": "向量维度，需与模型匹配",
+      "device": "CPU 或 CUDA (如 cuda:0)"
+    }
+  },
+  "dashboard": {
+    "title": "仪表盘",
+    "subtitle": "系统概览",
+    "totalMemories": "总记忆数",
+    "totalEntities": "实体数",
+    "totalEvents": "事件数",
+    "recentActivity": "最近活动",
+    "systemStatus": "系统状态",
+    "storageUsage": "存储使用",
+    "searchStats": "搜索统计"
+  }
+}
