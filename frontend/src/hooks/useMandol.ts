@@ -144,10 +144,57 @@ export function useMandol() {
     setIsLoading(true);
     setError(null);
     try {
-      await api.del(`mandol/spaces/${name}?cascade=${cascade}`);
+      // 按段编码以支持包含斜杠的空间名
+      const encodedName = name.split("/").map(encodeURIComponent).join("/");
+      await api.del(`mandol/spaces/${encodedName}?cascade=${cascade}`);
       return true;
     } catch (err) {
       handleErr(err, "删除空间失败");
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // 列出空间内的单元
+  const listUnitsInSpace = useCallback(async (name: string, limit = 100) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const encodedName = name.split("/").map(encodeURIComponent).join("/");
+      const data = await api.get<MandolUnitListResponse>(
+        `mandol/spaces/${encodedName}/units?limit=${limit}`
+      );
+      return data;
+    } catch (err) {
+      return handleErr(err, "获取空间单元失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const addUnitToSpace = useCallback(async (uid: string, spaceName: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.post("mandol/spaces/add-unit", { uid, space_name: spaceName });
+      return true;
+    } catch (err) {
+      handleErr(err, "添加单元到空间失败");
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const removeUnitFromSpace = useCallback(async (uid: string, spaceName: string) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.post("mandol/spaces/remove-unit", { uid, space_name: spaceName });
+      return true;
+    } catch (err) {
+      handleErr(err, "从空间移除单元失败");
       return false;
     } finally {
       setIsLoading(false);
@@ -435,6 +482,9 @@ export function useMandol() {
     listSpaces,
     createSpace,
     deleteSpace,
+    listUnitsInSpace,
+    addUnitToSpace,
+    removeUnitFromSpace,
     // 关系
     listRelationships,
     createRelationship,
