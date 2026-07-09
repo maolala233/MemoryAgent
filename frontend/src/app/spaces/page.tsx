@@ -40,6 +40,8 @@ export default function SpacesPage() {
       setUnitsInSpace([]);
       return;
     }
+    // 先清空，避免切换空间时短暂显示上一个空间的单元数
+    setUnitsInSpace([]);
     setUnitsLoading(true);
     listUnitsInSpace(selectedSpace.name, 200)
       .then((data) => setUnitsInSpace(data?.items || []))
@@ -103,11 +105,12 @@ export default function SpacesPage() {
         // 刷新单元列表与空间信息
         const data = await listUnitsInSpace(selectedSpace.name, 200);
         setUnitsInSpace(data?.items || []);
-        await listSpaces();
-        // 更新 selectedSpace 计数
-        setSelectedSpace((prev) =>
-          prev ? { ...prev, unit_count: prev.unit_count + 1 } : prev
-        );
+        const spacesResp = await listSpaces();
+        // 用最新的 spaces 数组更新 selectedSpace，避免与左侧列表脱节
+        if (spacesResp) {
+          const updated = spacesResp.items.find((s) => s.name === selectedSpace.name);
+          if (updated) setSelectedSpace(updated);
+        }
       }
     } catch (e) {
       setOperationLog({ kind: "err", text: `添加失败：${(e as Error).message}` });
@@ -121,9 +124,12 @@ export default function SpacesPage() {
     if (ok) {
       setOperationLog({ kind: "ok", text: `已从空间移除单元「${uid}」` });
       setUnitsInSpace((arr) => arr.filter((u) => u.uid !== uid));
-      setSelectedSpace((prev) =>
-        prev ? { ...prev, unit_count: Math.max(0, prev.unit_count - 1) } : prev
-      );
+      // 刷新空间列表与详情，保持左侧/右侧数据一致
+      const spacesResp = await listSpaces();
+      if (spacesResp) {
+        const updated = spacesResp.items.find((s) => s.name === selectedSpace.name);
+        if (updated) setSelectedSpace(updated);
+      }
     } else {
       setOperationLog({ kind: "err", text: `移除单元失败` });
     }
@@ -360,7 +366,7 @@ export default function SpacesPage() {
               <div className="flex items-center gap-3 text-label-md text-on-surface-variant">
                 <span className="flex items-center gap-1">
                   <Icon name="memory" className="text-[16px]" />
-                  <strong className="text-on-surface">{selectedSpace.unit_count}</strong> 单元
+                  <strong className="text-on-surface">{unitsInSpace.length}</strong> 单元
                 </span>
                 {selectedSpace.child_spaces.length > 0 && (
                   <span className="flex items-center gap-1">

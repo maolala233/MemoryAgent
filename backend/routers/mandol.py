@@ -167,6 +167,18 @@ def list_spaces() -> SpaceListResponse:
     return SpaceListResponse(total=len(items), items=[SpaceInfo(**i) for i in items])
 
 
+@router.get("/spaces/{name:path}/units", response_model=MandolUnitListResponse)
+def list_units_in_space(name: str, limit: int = Query(100, ge=1, le=1000)) -> MandolUnitListResponse:
+    """列出空间内的单元。
+
+    注意：本路由必须在 /spaces/{name:path} 之前声明，
+    否则会被后者捕获并把 name 解析为 "<space>/units"。
+    """
+    _require_enabled()
+    items = _safe_call(mandol_service.list_units_in_space, name, limit=limit)
+    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
+
+
 @router.get("/spaces/{name:path}", response_model=SpaceInfo)
 def get_space(name: str) -> SpaceInfo:
     """获取指定空间信息。"""
@@ -199,14 +211,6 @@ def attach_child_space(req: SpaceAttachRequest) -> StatusResponse:
     _require_enabled()
     _safe_call(mandol_service.attach_child_space, req.parent, req.child)
     return StatusResponse(status="ok", message=f"{req.child} -> {req.parent}")
-
-
-@router.get("/spaces/{name:path}/units", response_model=MandolUnitListResponse)
-def list_units_in_space(name: str, limit: int = Query(100, ge=1, le=1000)) -> MandolUnitListResponse:
-    """列出空间内的单元。"""
-    _require_enabled()
-    items = _safe_call(mandol_service.list_units_in_space, name, limit=limit)
-    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
 
 
 @router.post("/spaces/add-unit", response_model=StatusResponse)

@@ -589,34 +589,108 @@ class MandolService:
             yield ("done", {"answer": answer})
 
     # ---------------- 空间管理 ----------------
-    def list_spaces(self) -> List[Dict[str, Any]]:
-        """列出所有记忆空间。"""
+    def _prune_dead_uids(self, system, sp) -> int:
+        """清理空间 unit_uids 中已经不存在的 uid（幽灵引用）。
+
+        当 MemoryUnit 被删除后，空间的 unit_uids 列表中可能仍然保留着
+        旧 uid，造成 unit_count 与 /units 接口返回数量不一致。
+        本方法会：
+        1. 过滤掉 store 中不存在的 uid；
+        2. 若发生删除则写回 store 并触发完整持久化（让下次启动也生效）。
+
+        Returns:
+            被移除的死引用数量。
+        """
+        if not sp.unit_uids:
+            return 0
+        store = system.semantic_map._store  # noqa: SLF001
+        try:
+            alive = [u for u in sp.unit_uids if store.get_unit(u) is not None]
+        except Exception:
+            return 0
+        if len(alive) == len(sp.unit_uids):
+            return 0
+        dead = len(sp.unit_uids) - len(alive)
+        sp.unit_uids = alive
+        if hasattr(store, "upsert_spaces"):
+            try:
+                store.upsert_spaces([sp])
+            except Exception:
+                pass
+        if hasattr(store, "flush"):
+            try:
+                store.flush()
+            except Exception:
+                pass
+        # 触发完整持久化（写回原 snapshot.json 目录），下次启动也生效
+        if hasattr(system, "save"):
+            try:
+                snapshot_path = (
+                    Path(self._storage_root) / "snapshot.json"
+                    if self._storage_root
+                    else Path(settings.mandol_storage_dir) / "snapshot.json"
+                )
+                if snapshot_path.exists():
+                    system.save(storage_path=str(snapshot_path))
+                else:
+                    system.save()
+            except Exception:
+                pass
+        return dead
+
+    def list_spaces(self, prune_ghost: bool = True) -> List[Dict[str, Any]]:
+        """列出所有记忆空间。
+
+        Args:
+            prune_ghost: 是否在返回前自动清理空间中的死引用 unit_uids。
+                默认为 True，可让 unit_count 与 /units 接口实际返回数量一致。
+        """
         system = self._require()
         spaces = system.semantic_map.list_spaces()
         out = []
         for sp in spaces:
+            if prune_ghost:
+                self._prune_dead_uids(system, sp)
+            # unit_count 使用递归总数（含子空间全部单元），
+            # 与 /spaces/{name}/units（recursive=True）的展示保持一致
+            recursive_count = self._count_units_recursive(system, sp)
             out.append({
                 "name": str(sp.name),
-                "unit_count": len(sp.unit_uids),
+                "unit_count": recursive_count,
                 "child_spaces": [str(c) for c in sp.child_spaces],
                 "summary": sp.summary_text,
                 "metadata": sp.metadata,
             })
         return out
 
-    def get_space(self, name: str) -> Optional[Dict[str, Any]]:
-        """获取指定空间信息。"""
+    def get_space(self, name: str, prune_ghost: bool = True) -> Optional[Dict[str, Any]]:
+        """获取指定空间信息。
+
+        Args:
+            name: 空间名。
+            prune_ghost: 是否在返回前自动清理空间中的死引用 unit_uids。
+        """
         system = self._require()
         sp = system.semantic_map.get_space(name)
         if not sp:
             return None
+        if prune_ghost:
+            self._prune_dead_uids(system, sp)
         return {
             "name": str(sp.name),
-            "unit_count": len(sp.unit_uids),
+            "unit_count": self._count_units_recursive(system, sp),
             "child_spaces": [str(c) for c in sp.child_spaces],
             "summary": sp.summary_text,
             "metadata": sp.metadata,
         }
+
+    def _count_units_recursive(self, system, sp) -> int:
+        """递归统计空间及其所有子空间下"实际存在"的单元数（去重）。"""
+        try:
+            units = system.semantic_map.get_units_in_spaces([str(sp.name)])
+            return len(units)
+        except Exception:
+            return len(sp.unit_uids or [])
 
     def create_space(self, name: str) -> Dict[str, Any]:
         """创建记忆空间。"""
@@ -655,10 +729,59 @@ class MandolService:
         return {"uid": uid, "space_name": space_name}
 
     def remove_unit_from_space(self, uid: str, space_name: str) -> Dict[str, Any]:
-        """从空间移除单元。"""
+        """从空间移除单元（不删除单元本身）。
+
+        SemanticMapService 没有 remove_unit_from_space，这里直接通过
+        get_space 获取空间对象并调用 MemorySpace.remove_unit，
+        然后写回 store 并触发完整持久化。
+        """
         from mandol import Uid
         system = self._require()
-        system.semantic_map.remove_unit_from_space(Uid(uid), space_name)
+        sp = system.semantic_map.get_space(space_name)
+        if sp is None:
+            raise KeyError(f"space not found: {space_name}")
+        unit = system.semantic_map._store.get_unit(Uid(uid))  # noqa: SLF001
+        if unit is None:
+            raise KeyError(f"unit not found: {uid}")
+        sp.remove_unit(uid)
+        # 反向更新 unit.metadata["spaces"]
+        try:
+            spaces = list(unit.metadata.get("spaces", []) or [])
+            if space_name in spaces:
+                spaces = [s for s in spaces if s != space_name]
+                if spaces:
+                    unit.metadata["spaces"] = sorted(spaces)
+                else:
+                    unit.metadata.pop("spaces", None)
+                unit.touch()
+        except Exception:
+            pass
+        # 写回 store
+        try:
+            system.semantic_map._store.upsert_spaces([sp])  # noqa: SLF001
+        except Exception:
+            pass
+        try:
+            system.semantic_map._store.upsert_units([unit])  # noqa: SLF001
+        except Exception:
+            pass
+        try:
+            system.semantic_map._store.flush()  # noqa: SLF001
+        except Exception:
+            pass
+        # 触发完整持久化（写回 snapshot.json）
+        try:
+            snapshot_path = (
+                Path(self._storage_root) / "snapshot.json"
+                if self._storage_root
+                else Path(settings.mandol_storage_dir) / "snapshot.json"
+            )
+            if snapshot_path.exists():
+                system.save(storage_path=str(snapshot_path))
+            else:
+                system.save()
+        except Exception:
+            pass
         return {"uid": uid, "space_name": space_name}
 
     # ---------------- 图谱操作 ----------------
