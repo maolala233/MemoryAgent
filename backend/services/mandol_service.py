@@ -16,6 +16,11 @@ from typing import Any, Dict, List, Optional, Sequence
 from ..config.settings import settings
 from ..utils.logger import info, warn
 
+# Milvus Lite 在 milvus.db 上加文件锁（fcntl.flock），同进程内多客户端会冲突。
+# 进程级单例锁 + MandolService._milvus_client 单例字段，保证 status 查询与
+# Mandol 内部 UnitStore 不会相互阻塞。
+_MILVUS_CLIENT_LOCK = threading.Lock()
+
 logger = logging.getLogger(__name__)
 
 # 视图名称常量（对应 mandol 的记忆分组）
@@ -78,6 +83,9 @@ class MandolService:
         self._storage_root: Optional[str] = None
         self._save_in_progress = threading.Event()
         self._last_save_result: Optional[Dict[str, Any]] = None
+
+    # 进程内单例：MilvusUnitStore 持有 milvus.db 的 fcntl 锁，重复创建会冲突
+    _unit_store: Optional[Any] = None
 
     # ---------------- 生命周期 ----------------
     def initialize(self) -> bool:
@@ -184,7 +192,12 @@ class MandolService:
         return Neo4jGraphStore(config=cfg)
 
     def _build_milvus_unit_store(self, embedding_dim: int) -> Any:
-        """构造 Milvus UnitStore（支持 milvus-lite 嵌入式，uri=file path）。"""
+        """构造 Milvus UnitStore（支持 milvus-lite 嵌入式，uri=file path）。
+
+        进程内单例缓存 — 避免 reset / reload 时多次实例化导致 fcntl 锁冲突。
+        """
+        if MandolService._unit_store is not None:
+            return MandolService._unit_store
         from mandol.infrastructure.milvus_unit_store import MilvusUnitStore
         from mandol.infrastructure.config import MilvusConfig
 
@@ -195,11 +208,13 @@ class MandolService:
             db_name=settings.mandol_milvus_db,
             collection=settings.mandol_milvus_collection,
         )
-        return MilvusUnitStore(
+        store = MilvusUnitStore(
             config=cfg,
             embedding_dim=embedding_dim,
             auto_create_collection=True,
         )
+        MandolService._unit_store = store
+        return store
 
     def _build_config(self) -> Any:
         """根据 settings 构建 MemorySystemConfig。"""
@@ -260,7 +275,7 @@ class MandolService:
     def shutdown(self) -> None:
         """关闭并持久化状态。"""
         with self._lock:
-            if self._system is None:
+            if self._system is None and MandolService._unit_store is None:
                 return
             try:
                 self.save()
@@ -268,6 +283,10 @@ class MandolService:
                 warn(f"Mandol 关闭时保存失败: {exc}")
             self._system = None
             self._init_attempted = False
+            # 释放 Milvus UnitStore 单例，否则下次 initialize 重建时会因
+            # 旧 fcntl 锁未释放而 DataDirLockedError
+            MandolService._unit_store = None
+            MandolService._milvus_client = None
             info("Mandol MemorySystem 已关闭")
 
     @property
@@ -1033,6 +1052,21 @@ class MandolService:
         }
 
     # ---------------- 外部存储状态 ----------------
+    # Milvus Lite 会在 milvus.db 上加文件锁，同一进程内多次创建连接会被
+    # fcntl.flock 拒绝（DataDirLockedError）。把 MilvusClient 缓存为单例，
+    # 跨 external_store_status 调用复用，避免与 Mandol 内部 UnitStore 冲突。
+    _milvus_client: Optional[Any] = None
+
+    def _get_milvus_client(self) -> Any:
+        """获取（或懒加载）进程内共享 MilvusClient；用于状态查询。"""
+        if MandolService._milvus_client is not None:
+            return MandolService._milvus_client
+        with _MILVUS_CLIENT_LOCK:
+            if MandolService._milvus_client is None:
+                from pymilvus import MilvusClient
+                MandolService._milvus_client = MilvusClient(uri=settings.mandol_milvus_uri)
+        return MandolService._milvus_client
+
     def external_store_status(self) -> Dict[str, Any]:
         """查询 Neo4j + Milvus 实际状态（节点/边/集合统计）。"""
         status: Dict[str, Any] = {
@@ -1055,14 +1089,12 @@ class MandolService:
             status["neo4j"]["available"] = True
         except Exception as exc:
             status["neo4j"]["error"] = str(exc)
-        # Milvus
+        # Milvus（复用进程内单例 client，避免与 UnitStore 的 fcntl 锁冲突）
         try:
-            from pymilvus import MilvusClient
-            client = MilvusClient(uri=settings.mandol_milvus_uri)
+            client = self._get_milvus_client()
             if client.has_collection(settings.mandol_milvus_collection):
                 status["milvus"]["unit_count"] = client.get_collection_stats(settings.mandol_milvus_collection).get("row_count", 0)
                 status["milvus"]["available"] = True
-            client.close()
         except Exception as exc:
             status["milvus"]["error"] = str(exc)
         # Snapshot

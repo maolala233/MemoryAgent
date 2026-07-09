@@ -5,7 +5,6 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Icon } from "@/components/shared/Icon";
 import { Loading } from "@/components/shared/Loading";
 import { api, ApiError } from "@/services/api";
-
 interface MandolConfig {
   enabled: boolean;
   storage_dir: string;
@@ -58,7 +57,9 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState("");
-  const [activeTab, setActiveTab] = useState<"llm" | "embedder" | "reranker" | "system">("llm");
+  const [activeTab, setActiveTab] = useState<
+    "llm" | "model_profiles" | "embedder" | "reranker" | "system"
+  >("model_profiles");
 
   useEffect(() => {
     loadConfig();
@@ -171,9 +172,10 @@ export default function SettingsPage() {
           </section>
 
           {/* 标签切换 */}
-          <div className="flex items-center gap-2 border-b border-border">
+          <div className="flex items-center gap-2 border-b border-border flex-wrap">
             {[
-              { key: "llm" as const, label: "LLM 大语言模型", icon: "smart_toy" },
+              { key: "model_profiles" as const, label: "问答模型（多源）", icon: "hub" },
+              { key: "llm" as const, label: "Mandol LLM", icon: "smart_toy" },
               { key: "embedder" as const, label: "Embedding 嵌入模型", icon: "data_object" },
               { key: "reranker" as const, label: "Reranker 重排序模型", icon: "sort" },
               { key: "system" as const, label: "系统参数", icon: "tune" },
@@ -193,6 +195,11 @@ export default function SettingsPage() {
               </button>
             ))}
           </div>
+
+          {/* 问答模型（多源）配置 */}
+          {activeTab === "model_profiles" && (
+            <LLMProfileManager />
+          )}
 
           {/* LLM 配置 */}
           {activeTab === "llm" && (
@@ -363,5 +370,361 @@ function NumberField({ label, value, onChange, step }: {
         className="w-full px-4 py-2 rounded-lg border border-border bg-surface-container-low text-on-surface focus:outline-none focus:border-primary"
       />
     </div>
+  );
+}
+
+// =============== LLM Profile 管理 ===============
+
+import type { LLMProfile } from "@/types";
+
+interface LLMProfileForm {
+  id?: string;
+  name: string;
+  provider: string;
+  base_url: string;
+  model: string;
+  api_key: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_s: number;
+  enabled: boolean;
+  is_default: boolean;
+}
+
+const EMPTY_PROFILE: LLMProfileForm = {
+  name: "",
+  provider: "openai",
+  base_url: "https://api.openai.com/v1",
+  model: "gpt-4o-mini",
+  api_key: "",
+  temperature: 0.3,
+  max_tokens: 1024,
+  timeout_s: 60,
+  enabled: true,
+  is_default: false,
+};
+
+function LLMProfileManager() {
+  const [profiles, setProfiles] = useState<LLMProfile[]>([]);
+  const [editing, setEditing] = useState<LLMProfileForm | null>(null);
+  const [editingErr, setEditingErr] = useState("");  // 模态框内错误（保存失败时显示）
+  const [saving, setSaving] = useState(false);        // 保存中 loading
+  const [testing, setTesting] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
+  const [msg, setMsg] = useState("");
+
+  const load = async () => {
+    try {
+      const list = await api.get<LLMProfile[]>("llm/profiles");
+      setProfiles(list || []);
+    } catch (err) {
+      setMsg(`加载失败: ${(err as Error).message}`);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const startNew = () => {
+    setEditing({ ...EMPTY_PROFILE });
+  };
+
+  const startEdit = (p: LLMProfile) => {
+    setEditing({
+      id: p.id,
+      name: p.name,
+      provider: p.provider,
+      base_url: p.base_url,
+      model: p.model,
+      api_key: p.api_key || "",
+      temperature: p.temperature,
+      max_tokens: p.max_tokens,
+      timeout_s: p.timeout_s,
+      enabled: p.enabled,
+      is_default: p.is_default,
+    });
+  };
+
+  const saveProfile = async () => {
+    if (!editing) return;
+    if (!editing.name || !editing.base_url || !editing.model) {
+      setEditingErr("名称 / Base URL / 模型为必填");
+      return;
+    }
+    setEditingErr("");
+    setSaving(true);
+    try {
+      // 后端只有 POST /api/llm/profiles（通用 upsert），不要把 id 拼到 URL，
+      // 否则会请求 /api/llm/profiles/<id>（该路由不存在 → 404 看似无响应）
+      await api.post<LLMProfile>(`llm/profiles`, editing);
+      setEditing(null);
+      setMsg("已保存");
+      await load();
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.detail : (err as Error).message;
+      setEditingErr(`保存失败: ${detail}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteProfile = async (id: string) => {
+    if (!confirm("确定删除该模型源？")) return;
+    try {
+      await api.del(`llm/profiles/${id}`);
+      await load();
+    } catch (err) {
+      setMsg(`删除失败: ${(err as Error).message}`);
+    }
+  };
+
+  const setDefault = async (id: string) => {
+    try {
+      await api.post<LLMProfile>(`llm/profiles/${id}/default`);
+      await load();
+    } catch (err) {
+      setMsg(`设默认失败: ${(err as Error).message}`);
+    }
+  };
+
+  const testProfile = async (id: string) => {
+    setTesting(id);
+    setMsg("");
+    try {
+      const r = await api.post<{ ok: boolean; status?: number; snippet?: string; error?: string }>(
+        `llm/profiles/${id}/test`,
+      );
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: {
+          ok: !!r.ok,
+          msg: r.ok
+            ? `✓ HTTP ${r.status} - ${(r.snippet || "").slice(0, 50)}`
+            : `✗ ${r.error || `HTTP ${r.status || "?"}`}`,
+        },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({
+        ...prev,
+        [id]: { ok: false, msg: `✗ ${(err as Error).message}` },
+      }));
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  return (
+    <section className="bg-surface border border-border rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-body-lg font-bold text-on-surface">问答模型（多源）</h3>
+          <p className="text-body-sm text-on-surface-variant mt-1">
+            添加多个 OpenAI 兼容模型源（OpenAI、Azure、Ollama、vLLM、DeepSeek 等），问答时可按需切换
+          </p>
+        </div>
+        <button
+          onClick={startNew}
+          className="bg-primary text-on-primary px-4 py-2 rounded-lg text-body-md font-medium inline-flex items-center gap-1 hover:opacity-90"
+        >
+          <Icon name="add" /> 新增模型
+        </button>
+      </div>
+
+      {msg && (
+        <div className="bg-surface-container-low border border-border rounded px-3 py-2 text-label-sm text-on-surface-variant">
+          {msg}
+        </div>
+      )}
+
+      {/* 列表 */}
+      <div className="space-y-2">
+        {profiles.length === 0 && (
+          <p className="text-label-sm text-on-surface-variant text-center py-6">
+            还没有模型源，点击右上角「新增模型」添加
+          </p>
+        )}
+        {profiles.map((p) => {
+          const test = testResults[p.id];
+          return (
+            <div
+              key={p.id}
+              className={[
+                "border rounded-lg p-3 flex items-start gap-3",
+                p.is_default ? "border-primary bg-primary-fixed/30" : "border-border",
+                !p.enabled ? "opacity-50" : "",
+              ].join(" ")}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-body-md font-medium text-on-surface">
+                    {p.name}
+                  </p>
+                  {p.is_default && (
+                    <span className="px-1.5 py-0.5 bg-primary text-on-primary rounded text-label-sm">
+                      默认
+                    </span>
+                  )}
+                  {!p.enabled && (
+                    <span className="px-1.5 py-0.5 bg-surface-container text-on-surface-variant rounded text-label-sm">
+                      禁用
+                    </span>
+                  )}
+                </div>
+                <p className="text-label-sm text-on-surface-variant mt-0.5 truncate">
+                  {p.provider} · {p.model} · {p.base_url}
+                </p>
+                {test && (
+                  <p
+                    className={[
+                      "text-label-sm mt-1",
+                      test.ok ? "text-success" : "text-error",
+                    ].join(" ")}
+                  >
+                    {test.msg}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                {!p.is_default && (
+                  <button
+                    onClick={() => setDefault(p.id)}
+                    className="px-2 py-1 text-label-sm border border-border rounded hover:bg-surface-container-low"
+                    title="设为默认"
+                  >
+                    设默认
+                  </button>
+                )}
+                <button
+                  onClick={() => testProfile(p.id)}
+                  disabled={testing === p.id}
+                  className="px-2 py-1 text-label-sm border border-border rounded hover:bg-surface-container-low inline-flex items-center gap-1"
+                  title="测试连通性"
+                >
+                  {testing === p.id ? <Loading size="sm" /> : <Icon name="bolt" className="text-[14px]" />}
+                  测试
+                </button>
+                <button
+                  onClick={() => startEdit(p)}
+                  className="p-1.5 text-on-surface-variant hover:text-primary"
+                  title="编辑"
+                >
+                  <Icon name="edit" className="text-[16px]" />
+                </button>
+                <button
+                  onClick={() => deleteProfile(p.id)}
+                  className="p-1.5 text-on-surface-variant hover:text-error"
+                  title="删除"
+                >
+                  <Icon name="delete" className="text-[16px]" />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 编辑表单 */}
+      {editing && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-surface border border-border rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 space-y-3">
+            <h4 className="text-body-lg font-bold">
+              {editing.id ? "编辑模型源" : "新增模型源"}
+            </h4>
+            <div className="grid grid-cols-2 gap-3">
+              <Field
+                label="显示名称 *"
+                value={editing.name}
+                onChange={(v) => setEditing({ ...editing, name: v })}
+                placeholder="GPT-4o / DeepSeek / Ollama-Llama3"
+              />
+              <Field
+                label="Provider"
+                value={editing.provider}
+                onChange={(v) => setEditing({ ...editing, provider: v })}
+                placeholder="openai / ollama / azure / deepseek"
+              />
+            </div>
+            <Field
+              label="Base URL *"
+              value={editing.base_url}
+              onChange={(v) => setEditing({ ...editing, base_url: v })}
+              placeholder="https://api.openai.com/v1  或  http://localhost:11434/v1"
+            />
+            <Field
+              label="模型 *"
+              value={editing.model}
+              onChange={(v) => setEditing({ ...editing, model: v })}
+              placeholder="gpt-4o-mini / llama3.1:8b / deepseek-chat"
+            />
+            <Field
+              label="API Key"
+              value={editing.api_key === "***" ? "" : editing.api_key}
+              onChange={(v) => setEditing({ ...editing, api_key: v })}
+              placeholder="sk-...  留空 = 不修改 / 公开模型可不填"
+              type="password"
+            />
+            <div className="grid grid-cols-3 gap-3">
+              <NumberField
+                label="Temperature"
+                value={editing.temperature}
+                onChange={(v) => setEditing({ ...editing, temperature: v })}
+                step={0.1}
+              />
+              <NumberField
+                label="Max Tokens"
+                value={editing.max_tokens}
+                onChange={(v) => setEditing({ ...editing, max_tokens: v })}
+              />
+              <NumberField
+                label="超时(秒)"
+                value={editing.timeout_s}
+                onChange={(v) => setEditing({ ...editing, timeout_s: v })}
+              />
+            </div>
+            <div className="flex items-center gap-4">
+              <label className="flex items-center gap-2 text-body-sm">
+                <input
+                  type="checkbox"
+                  checked={editing.enabled}
+                  onChange={(e) => setEditing({ ...editing, enabled: e.target.checked })}
+                />
+                启用
+              </label>
+              <label className="flex items-center gap-2 text-body-sm">
+                <input
+                  type="checkbox"
+                  checked={editing.is_default}
+                  onChange={(e) => setEditing({ ...editing, is_default: e.target.checked })}
+                />
+                设为默认
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <button
+                onClick={() => { setEditing(null); setEditingErr(""); }}
+                className="px-3 py-2 text-body-sm border border-border rounded"
+                disabled={saving}
+              >
+                取消
+              </button>
+              <button
+                onClick={saveProfile}
+                disabled={saving}
+                className="px-3 py-2 text-body-sm bg-primary text-on-primary rounded inline-flex items-center gap-2 disabled:opacity-60"
+              >
+                {saving && <Loading size="sm" />}
+                {saving ? "保存中…" : "保存"}
+              </button>
+            </div>
+            {editingErr && (
+              <div className="bg-error-container/30 border border-error/40 text-error rounded px-3 py-2 text-label-sm">
+                {editingErr}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

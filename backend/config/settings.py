@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     vault_dir: Path = Field(default_factory=lambda: Path("data/vault"))
     db_path: Path = Field(default_factory=lambda: Path("data/codex_memory.db"))
     upload_dir: Path = Field(default_factory=lambda: Path("data/uploads"))
+    llm_profiles_path: Path = Field(default_factory=lambda: Path("data/llm_profiles.json"))
 
     # ---------------- 服务器 ----------------
     host: str = "0.0.0.0"

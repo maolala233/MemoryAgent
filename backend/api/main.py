@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from ..config.settings import apply_env_overrides, settings
 from ..routers import agents, chat, documents, mandol, memory, search, stats
 from ..routers import settings as settings_router
+from ..routers import llm as llm_router
 from ..services.agent_service import agent_service
 from ..services.background_service import background_service
 from ..services.mandol_service import mandol_service
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(documents.router)
     app.include_router(mandol.router)
     app.include_router(settings_router.router)
+    app.include_router(llm_router.router)
 
     @app.get("/api/health")
     def health() -> dict:

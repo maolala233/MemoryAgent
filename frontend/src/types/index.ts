@@ -335,3 +335,45 @@ export interface SnapshotResponse {
   units: number;
   spaces: number;
 }
+
+// =============== LLM 模型服务源 ===============
+export interface LLMProfile {
+  id: string;
+  name: string;
+  provider: string;
+  base_url: string;
+  model: string;
+  api_key?: string;
+  temperature: number;
+  max_tokens: number;
+  timeout_s: number;
+  enabled: boolean;
+  is_default: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+// =============== 多轮对话会话 ===============
+export interface ChatSession {
+  id: string;
+  title: string;
+  profile_id: string;
+  space_name: string;
+  search_strategy: "auto" | "holistic" | "text_only" | "graph_only" | string;
+  top_k: number;
+  use_rerank: boolean;
+  save_to_space: string;
+  created_at: string;
+  updated_at: string;
+  message_count?: number;
+}
+
+export interface ChatSessionMessage {
+  id: number;
+  role: "user" | "assistant" | "system";
+  content: string;
+  memories: MemoryResult[];
+  thinking: string | null;
+  trace: Record<string, unknown>[];
+  created_at: string;
+}

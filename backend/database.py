@@ -78,6 +78,34 @@ CREATE INDEX IF NOT EXISTS idx_memory_type ON memory_docs(memory_type);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory_docs(status);
 CREATE INDEX IF NOT EXISTS idx_memory_project ON memory_docs(project_id);
 CREATE INDEX IF NOT EXISTS idx_chat_agent ON chat_history(agent_id);
+
+-- v2: 多模型会话
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    id            TEXT PRIMARY KEY,
+    title         TEXT,
+    profile_id    TEXT,
+    space_name    TEXT,
+    search_strategy TEXT,
+    top_k         INTEGER,
+    use_rerank    INTEGER,
+    save_to_space TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_session_messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT,
+    role         TEXT,
+    content      TEXT,
+    memories_json TEXT,
+    thinking     TEXT,
+    trace_json   TEXT,
+    created_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sess_messages_session ON chat_session_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated ON chat_sessions(updated_at DESC);
 """
 
 
@@ -481,6 +509,155 @@ class Database:
                     "created_at": r["created_at"],
                 }
             )
+        return out
+
+    # ---------------- Chat sessions (v2) ----------------
+    def create_session(self, sess: Dict[str, Any]) -> Dict[str, Any]:
+        now = _now_iso()
+        row = {
+            "id": sess["id"],
+            "title": sess.get("title") or "新会话",
+            "profile_id": sess.get("profile_id") or "",
+            "space_name": sess.get("space_name") or "",
+            "search_strategy": sess.get("search_strategy") or "auto",
+            "top_k": int(sess.get("top_k") or 5),
+            "use_rerank": 1 if sess.get("use_rerank", True) else 0,
+            "save_to_space": sess.get("save_to_space") or "",
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions(
+                    id, title, profile_id, space_name, search_strategy,
+                    top_k, use_rerank, save_to_space, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (row["id"], row["title"], row["profile_id"], row["space_name"],
+                 row["search_strategy"], row["top_k"], row["use_rerank"],
+                 row["save_to_space"], row["created_at"], row["updated_at"]),
+            )
+        return row
+
+    def update_session(self, sid: str, **fields: Any) -> Optional[Dict[str, Any]]:
+        allowed = {"title", "profile_id", "space_name", "search_strategy",
+                   "top_k", "use_rerank", "save_to_space"}
+        sets: List[str] = []
+        vals: List[Any] = []
+        for k, v in fields.items():
+            if k in allowed:
+                sets.append(f"{k}=?")
+                vals.append(int(v) if k == "top_k" else (1 if v else 0 if k == "use_rerank" else v))
+        if not sets:
+            return self.get_session(sid)
+        sets.append("updated_at=?")
+        vals.append(_now_iso())
+        vals.append(sid)
+        with self.session() as conn:
+            conn.execute(f"UPDATE chat_sessions SET {', '.join(sets)} WHERE id=?", vals)
+        return self.get_session(sid)
+
+    def get_session(self, sid: str) -> Optional[Dict[str, Any]]:
+        with self.session() as conn:
+            row = conn.execute(
+                "SELECT * FROM chat_sessions WHERE id=?", (sid,)
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "profile_id": row["profile_id"],
+            "space_name": row["space_name"],
+            "search_strategy": row["search_strategy"],
+            "top_k": row["top_k"],
+            "use_rerank": bool(row["use_rerank"]),
+            "save_to_space": row["save_to_space"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def list_sessions(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chat_sessions ORDER BY updated_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id": r["id"],
+                "title": r["title"],
+                "profile_id": r["profile_id"],
+                "space_name": r["space_name"],
+                "search_strategy": r["search_strategy"],
+                "top_k": r["top_k"],
+                "use_rerank": bool(r["use_rerank"]),
+                "save_to_space": r["save_to_space"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+            })
+        # 补 message_count
+        for s in out:
+            with self.session() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM chat_session_messages WHERE session_id=?",
+                    (s["id"],),
+                ).fetchone()
+            s["message_count"] = row["c"] if row else 0
+        return out
+
+    def delete_session(self, sid: str) -> bool:
+        with self.session() as conn:
+            cur = conn.execute("DELETE FROM chat_sessions WHERE id=?", (sid,))
+            conn.execute("DELETE FROM chat_session_messages WHERE session_id=?", (sid,))
+            return (cur.rowcount or 0) > 0
+
+    def append_session_message(self, sid: str, role: str, content: str,
+                               memories: Optional[List[Dict[str, Any]]] = None,
+                               thinking: Optional[str] = None,
+                               trace: Optional[List[Dict[str, Any]]] = None) -> int:
+        now = _now_iso()
+        with self.session() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO chat_session_messages(
+                    session_id, role, content, memories_json, thinking, trace_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (sid, role, content,
+                 json.dumps(memories or [], ensure_ascii=False),
+                 thinking,
+                 json.dumps(trace or [], ensure_ascii=False),
+                 now),
+            )
+            conn.execute(
+                "UPDATE chat_sessions SET updated_at=? WHERE id=?", (now, sid)
+            )
+            return int(cur.lastrowid or 0)
+
+    def load_session_messages(self, sid: str, limit: int = 200) -> List[Dict[str, Any]]:
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM chat_session_messages
+                WHERE session_id=?
+                ORDER BY id ASC LIMIT ?
+                """,
+                (sid, limit),
+            ).fetchall()
+        out = []
+        for r in rows:
+            out.append({
+                "id": r["id"],
+                "role": r["role"],
+                "content": r["content"],
+                "memories": json.loads(r["memories_json"] or "[]"),
+                "thinking": r["thinking"],
+                "trace": json.loads(r["trace_json"] or "[]"),
+                "created_at": r["created_at"],
+            })
         return out
 
     # ---------------- Audit ----------------
