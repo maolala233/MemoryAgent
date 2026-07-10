@@ -4,11 +4,18 @@
 """
 from __future__ import annotations
 
+from typing import Any, Dict
+
 from pydantic import BaseModel, ConfigDict
 from fastapi import APIRouter, HTTPException
 
 from ..config.settings import settings
-from ..services.config_loader import get_models_config, save_models_config
+from ..services.config_loader import (
+    get_models_config,
+    get_external_stores_config,
+    save_external_stores_config,
+    save_models_config,
+)
 from ..services.mandol_service import mandol_service
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -58,6 +65,30 @@ class SystemParams(BaseModel):
     use_unified_pipeline: bool = True
 
 
+class MilvusConfig(BaseModel):
+    uri: str = ""
+    user: str = ""
+    password: str = ""
+    db_name: str = ""
+    collection: str = "mandol_memory_units"
+    token: str = ""
+    secure: bool = False
+    remote_enabled: bool = True
+
+
+class Neo4jConfig(BaseModel):
+    uri: str = ""
+    user: str = ""
+    password: str = ""
+    database: str = ""
+
+
+class ExternalStoresConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    milvus: MilvusConfig = MilvusConfig()
+    neo4j: Neo4jConfig = Neo4jConfig()
+
+
 class MandolConfigRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
     enabled: bool = True
@@ -68,6 +99,7 @@ class MandolConfigRequest(BaseModel):
     embedder: EmbedderConfig = EmbedderConfig()
     reranker: RerankerConfig = RerankerConfig()
     system: SystemParams = SystemParams()
+    external_stores: ExternalStoresConfig = ExternalStoresConfig()
 
 
 class SettingsConfigRequest(BaseModel):
@@ -123,6 +155,24 @@ def get_config():
                 "max_events_per_llm": settings.mandol_max_events_per_llm,
                 "promote_threshold": settings.mandol_promote_threshold,
                 "use_unified_pipeline": settings.mandol_use_unified_pipeline,
+            },
+            "external_stores": {
+                "milvus": {
+                    "uri": settings.mandol_milvus_uri,
+                    "user": settings.mandol_milvus_user,
+                    "password": "***" if settings.mandol_milvus_password else "",
+                    "db_name": settings.mandol_milvus_db,
+                    "collection": settings.mandol_milvus_collection,
+                    "token": "***" if settings.mandol_milvus_token else "",
+                    "secure": settings.mandol_milvus_secure,
+                    "remote_enabled": settings.mandol_milvus_remote_enabled,
+                },
+                "neo4j": {
+                    "uri": settings.mandol_neo4j_uri,
+                    "user": settings.mandol_neo4j_user,
+                    "password": "***" if settings.mandol_neo4j_password else "",
+                    "database": settings.mandol_neo4j_database,
+                },
             },
         },
         "is_ready": mandol_service.is_ready,
@@ -184,13 +234,58 @@ def update_config(req: SettingsConfigRequest):
         settings.mandol_promote_threshold = s.promote_threshold
         settings.mandol_use_unified_pipeline = s.use_unified_pipeline
 
+        # 外部存储（Milvus / Neo4j）
+        es = m.external_stores
+        milvus = es.milvus
+        settings.mandol_milvus_uri = milvus.uri or settings.mandol_milvus_uri
+        settings.mandol_milvus_user = milvus.user
+        if milvus.password and milvus.password != "***":
+            settings.mandol_milvus_password = milvus.password
+        settings.mandol_milvus_db = milvus.db_name
+        settings.mandol_milvus_collection = milvus.collection or settings.mandol_milvus_collection
+        if milvus.token and milvus.token != "***":
+            settings.mandol_milvus_token = milvus.token
+        settings.mandol_milvus_secure = bool(milvus.secure)
+        settings.mandol_milvus_remote_enabled = bool(milvus.remote_enabled)
+
+        neo4j = es.neo4j
+        settings.mandol_neo4j_uri = neo4j.uri or settings.mandol_neo4j_uri
+        settings.mandol_neo4j_user = neo4j.user or settings.mandol_neo4j_user
+        if neo4j.password and neo4j.password != "***":
+            settings.mandol_neo4j_password = neo4j.password
+        settings.mandol_neo4j_database = neo4j.database or settings.mandol_neo4j_database
+
+        # 持久化外部存储配置（启动时默认加载）
+        try:
+            save_external_stores_config({
+                "milvus": {
+                    "uri": settings.mandol_milvus_uri,
+                    "user": settings.mandol_milvus_user,
+                    "password": settings.mandol_milvus_password,
+                    "db_name": settings.mandol_milvus_db,
+                    "collection": settings.mandol_milvus_collection,
+                    "token": settings.mandol_milvus_token,
+                    "secure": settings.mandol_milvus_secure,
+                    "remote_enabled": settings.mandol_milvus_remote_enabled,
+                },
+                "neo4j": {
+                    "uri": settings.mandol_neo4j_uri,
+                    "user": settings.mandol_neo4j_user,
+                    "password": settings.mandol_neo4j_password,
+                    "database": settings.mandol_neo4j_database,
+                },
+            })
+        except Exception as exc:
+            from logging import getLogger as _getLogger
+            _getLogger("codex_memory").warning(f"保存外部存储配置失败: {exc}")
+
         # 更新启用状态
         if m.enabled and not mandol_service.is_enabled:
             mandol_service.initialize()
         elif not m.enabled and mandol_service.is_enabled:
             mandol_service.shutdown()
 
-        return {"status": "ok", "message": "配置已保存。如需应用模型变更，请点击「热重载」按钮。"}
+        return {"status": "ok", "message": "配置已保存并写入磁盘。如需应用模型与连接变更，请点击「热重载」按钮。"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -227,4 +322,38 @@ def test_providers():
             result["reranker"] = True
     except Exception as exc:
         result["error"] = str(exc)
+    return result
+
+
+@router.post("/external-stores/test")
+def test_external_stores():
+    """测试 Milvus + Neo4j 当前配置的连通性（带超时，快速返回）。"""
+    result: Dict[str, Any] = {
+        "milvus": {"available": False, "uri": settings.mandol_milvus_uri, "error": None},
+        "neo4j": {"available": False, "uri": settings.mandol_neo4j_uri, "error": None},
+    }
+    # Milvus
+    try:
+        from pymilvus import MilvusClient
+        client = MilvusClient(uri=settings.mandol_milvus_uri)
+        collections = client.list_collections()
+        result["milvus"]["available"] = True
+        result["milvus"]["collections"] = list(collections or [])
+    except Exception as exc:
+        result["milvus"]["error"] = str(exc)
+    # Neo4j
+    try:
+        from neo4j import GraphDatabase
+        d = GraphDatabase.driver(
+            settings.mandol_neo4j_uri,
+            auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+            connection_timeout=3,
+        )
+        with d.session(database=settings.mandol_neo4j_database) as s:
+            cnt = s.run("RETURN 1 as x").single()["x"]
+            result["neo4j"]["ping"] = cnt
+        d.close()
+        result["neo4j"]["available"] = True
+    except Exception as exc:
+        result["neo4j"]["error"] = str(exc)
     return result

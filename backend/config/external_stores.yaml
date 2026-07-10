@@ -1,0 +1,14 @@
+milvus:
+  collection: mandol_memory_units
+  db_name: ''
+  password: ''
+  remote_enabled: true
+  secure: false
+  token: ''
+  uri: http://localhost:19530
+  user: ''
+neo4j:
+  database: neo4j
+  password: mandol123
+  uri: bolt://localhost:7687
+  user: neo4j

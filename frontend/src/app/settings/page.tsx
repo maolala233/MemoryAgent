@@ -50,6 +50,24 @@ interface MandolConfig {
     promote_threshold: number;
     use_unified_pipeline: boolean;
   };
+  external_stores: {
+    milvus: {
+      uri: string;
+      user: string;
+      password: string;
+      db_name: string;
+      collection: string;
+      token: string;
+      secure: boolean;
+      remote_enabled: boolean;
+    };
+    neo4j: {
+      uri: string;
+      user: string;
+      password: string;
+      database: string;
+    };
+  };
 }
 
 export default function SettingsPage() {
@@ -58,7 +76,13 @@ export default function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "llm" | "model_profiles" | "embedder" | "reranker" | "system" | "local_models"
+    | "llm"
+    | "model_profiles"
+    | "embedder"
+    | "reranker"
+    | "system"
+    | "vector_db"
+    | "local_models"
   >("model_profiles");
 
   useEffect(() => {
@@ -69,7 +93,15 @@ export default function SettingsPage() {
     setIsLoading(true);
     try {
       const data = await api.get<{ mandol: MandolConfig; is_ready: boolean }>("settings/config");
-      setConfig(data.mandol);
+      // 兼容旧后端：确保 external_stores 存在
+      const m = data.mandol;
+      if (!m.external_stores) {
+        (m as any).external_stores = {
+          milvus: { uri: "", user: "", password: "", db_name: "", collection: "mandol_memory_units", token: "", secure: false, remote_enabled: true },
+          neo4j: { uri: "", user: "", password: "", database: "" },
+        };
+      }
+      setConfig(m);
     } catch (err) {
       setMessage(`加载配置失败: ${err instanceof ApiError ? err.detail : "未知错误"}`);
     } finally {
@@ -179,6 +211,7 @@ export default function SettingsPage() {
               { key: "local_models" as const, label: "本地模型", icon: "folder_zip" },
               { key: "embedder" as const, label: "Embedding 嵌入模型", icon: "data_object" },
               { key: "reranker" as const, label: "Reranker 重排序模型", icon: "sort" },
+              { key: "vector_db" as const, label: "向量库 / 图数据库", icon: "storage" },
               { key: "system" as const, label: "系统参数", icon: "tune" },
             ].map((tab) => (
               <button
@@ -275,6 +308,11 @@ export default function SettingsPage() {
                 </>
               )}
             </section>
+          )}
+
+          {/* 向量库 / 图数据库 */}
+          {activeTab === "vector_db" && (
+            <VectorDbConfig config={config} updateField={updateField} setMessage={setMessage} />
           )}
 
           {/* 系统参数 */}
@@ -376,6 +414,159 @@ function NumberField({ label, value, onChange, step }: {
         className="w-full px-4 py-2 rounded-lg border border-border bg-surface-container-low text-on-surface focus:outline-none focus:border-primary"
       />
     </div>
+  );
+}
+
+// =============== 向量库 / 图数据库配置 ===============
+
+function VectorDbConfig({
+  config,
+  updateField,
+  setMessage,
+}: {
+  config: MandolConfig;
+  updateField: (path: string, value: any) => void;
+  setMessage: (m: string) => void;
+}) {
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    milvus: { available: boolean; uri: string; collections?: string[]; error?: string | null };
+    neo4j: { available: boolean; uri: string; error?: string | null };
+  } | null>(null);
+
+  const handleTest = async () => {
+    setTesting(true);
+    setMessage("");
+    setTestResult(null);
+    try {
+      // 先把当前编辑值同步到 settings（通过保存接口走个来回），再测试
+      // 这里直接测试当前 settings 中的值（后端读取的是 settings.mandol_milvus_*）
+      const data = await api.post<{
+        milvus: { available: boolean; uri: string; collections?: string[]; error?: string | null };
+        neo4j: { available: boolean; uri: string; error?: string | null };
+      }>("settings/external-stores/test");
+      setTestResult(data);
+      const m = data.milvus.available ? "✓" : "✗";
+      const n = data.neo4j.available ? "✓" : "✗";
+      setMessage(`Milvus: ${m} | Neo4j: ${n}`);
+    } catch (err) {
+      setMessage(`连通性测试失败: ${err instanceof ApiError ? err.detail : "未知错误"}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const m = config.external_stores?.milvus ?? {
+    uri: "",
+    user: "",
+    password: "",
+    db_name: "",
+    collection: "mandol_memory_units",
+    token: "",
+    secure: false,
+    remote_enabled: true,
+  };
+  const n4j = config.external_stores?.neo4j ?? {
+    uri: "",
+    user: "",
+    password: "",
+    database: "",
+  };
+  return (
+    <section className="space-y-4">
+      <div className="bg-surface border border-border rounded-xl p-5 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body-lg font-bold text-on-surface">Milvus 向量数据库</h3>
+            <p className="text-body-sm text-on-surface-variant mt-1">
+              用于存储记忆单元的稠密向量，支持 Milvus Lite（本地文件）或远程 Milvus Server。
+              配置会持久化到 <code className="text-body-sm bg-surface-container px-1 rounded">external_stores.yaml</code>，
+              下次启动自动应用。
+            </p>
+          </div>
+          <span className="text-label-sm px-2 py-0.5 rounded bg-primary/10 text-primary">持久化生效</span>
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={m.remote_enabled}
+            onChange={(e) => updateField("external_stores.milvus.remote_enabled", e.target.checked)}
+            className="accent-primary"
+          />
+          <span className="text-body-md">使用远程 Milvus Server（取消则回退到本地嵌入式 milvus.db）</span>
+        </label>
+        <Field
+          label={m.remote_enabled ? "Milvus URI" : "本地 db 文件路径"}
+          value={m.uri}
+          onChange={(v) => updateField("external_stores.milvus.uri", v)}
+          placeholder={m.remote_enabled ? "http://localhost:19530" : "data/mandol/milvus.db"}
+        />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="用户名" value={m.user} onChange={(v) => updateField("external_stores.milvus.user", v)} placeholder="（无则留空）" />
+          <Field label="密码" value={m.password} onChange={(v) => updateField("external_stores.milvus.password", v)} placeholder="（无则留空，*** 表示已保存）" type="password" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="数据库名" value={m.db_name} onChange={(v) => updateField("external_stores.milvus.db_name", v)} placeholder="（使用默认则留空）" />
+          <Field label="Collection 名" value={m.collection} onChange={(v) => updateField("external_stores.milvus.collection", v)} placeholder="mandol_memory_units" />
+        </div>
+        <Field label="Token (鉴权用)" value={m.token} onChange={(v) => updateField("external_stores.milvus.token", v)} placeholder="（无则留空，*** 表示已保存）" type="password" />
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={m.secure}
+            onChange={(e) => updateField("external_stores.milvus.secure", e.target.checked)}
+            className="accent-primary"
+          />
+          <span className="text-body-md">使用 HTTPS（远程模式）</span>
+        </label>
+      </div>
+
+      <div className="bg-surface border border-border rounded-xl p-5 space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body-lg font-bold text-on-surface">Neo4j 图数据库</h3>
+            <p className="text-body-sm text-on-surface-variant mt-1">
+              用于实体/事件/关系图谱存储。配置同样持久化到
+              <code className="text-body-sm bg-surface-container px-1 rounded mx-1">external_stores.yaml</code>。
+            </p>
+          </div>
+        </div>
+        <Field label="Bolt URI" value={n4j.uri} onChange={(v) => updateField("external_stores.neo4j.uri", v)} placeholder="bolt://localhost:7687" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Field label="用户名" value={n4j.user} onChange={(v) => updateField("external_stores.neo4j.user", v)} placeholder="neo4j" />
+          <Field label="密码" value={n4j.password} onChange={(v) => updateField("external_stores.neo4j.password", v)} placeholder="（无则留空，*** 表示已保存）" type="password" />
+        </div>
+        <Field label="数据库名" value={n4j.database} onChange={(v) => updateField("external_stores.neo4j.database", v)} placeholder="neo4j" />
+      </div>
+
+      <div className="bg-surface border border-border rounded-xl p-4 flex items-center gap-3 flex-wrap">
+        <button
+          onClick={handleTest}
+          disabled={testing}
+          className="bg-secondary-container text-on-secondary-container px-4 py-2 rounded-lg font-medium text-body-md hover:bg-opacity-80 disabled:opacity-50"
+        >
+          {testing ? "测试中..." : "测试连接"}
+        </button>
+        <span className="text-body-sm text-on-surface-variant">
+          提示：点击「测试连接」会使用 settings 中已保存的值；如修改了上面表单，请先「保存并应用」。
+        </span>
+        {testResult && (
+          <div className="w-full mt-2 text-body-sm">
+            <div className={testResult.milvus.available ? "text-success" : "text-error"}>
+              Milvus {testResult.milvus.available ? "✓ 可用" : "✗ 不可用"} ({testResult.milvus.uri})
+              {testResult.milvus.error ? ` - ${testResult.milvus.error}` : ""}
+              {testResult.milvus.collections && testResult.milvus.collections.length > 0
+                ? ` - collections: ${testResult.milvus.collections.join(", ")}`
+                : ""}
+            </div>
+            <div className={testResult.neo4j.available ? "text-success" : "text-error"}>
+              Neo4j {testResult.neo4j.available ? "✓ 可用" : "✗ 不可用"} ({testResult.neo4j.uri})
+              {testResult.neo4j.error ? ` - ${testResult.neo4j.error}` : ""}
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 

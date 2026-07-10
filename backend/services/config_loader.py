@@ -49,6 +49,17 @@ class ConfigLoader:
     def load_retrieval(self) -> Dict[str, Any]:
         return self.load("retrieval")
 
+    def load_external_stores(self) -> Dict[str, Any]:
+        """加载外部存储（Milvus / Neo4j）持久化配置。"""
+        return self.load("external_stores")
+
+    def save_external_stores(self, data: Dict[str, Any]) -> None:
+        """写入外部存储配置到 external_stores.yaml。"""
+        path = self.config_dir / "external_stores.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
+
 
 config_loader = ConfigLoader()
 
@@ -78,3 +89,57 @@ def save_models_config(data: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
+
+
+def get_external_stores_config() -> Dict[str, Any]:
+    """获取外部存储（Milvus / Neo4j）的持久化配置。"""
+    return config_loader.load_external_stores()
+
+
+def save_external_stores_config(data: Dict[str, Any]) -> None:
+    """写入外部存储（Milvus / Neo4j）配置。"""
+    config_loader.save_external_stores(data)
+
+
+def apply_external_stores_config(target=None) -> None:
+    """启动时把 external_stores.yaml 中的值写入 settings.mandol_milvus_* / mandol_neo4j_*。
+
+    优先级：YAML 持久化配置 > settings 类默认值 > 环境变量。
+    仅在目标字段为非空时才覆盖，避免空字符串误清空。
+    """
+    cfg = get_external_stores_config()
+    if not cfg:
+        return
+    target = target or settings
+
+    milvus = cfg.get("milvus", {}) or {}
+    if isinstance(milvus, dict):
+        mapping = {
+            "uri": "mandol_milvus_uri",
+            "user": "mandol_milvus_user",
+            "password": "mandol_milvus_password",
+            "db_name": "mandol_milvus_db",
+            "collection": "mandol_milvus_collection",
+            "token": "mandol_milvus_token",
+        }
+        for k, attr in mapping.items():
+            v = milvus.get(k)
+            if v not in (None, ""):
+                setattr(target, attr, v)
+        if "secure" in milvus:
+            target.mandol_milvus_secure = bool(milvus["secure"])
+        if "remote_enabled" in milvus:
+            target.mandol_milvus_remote_enabled = bool(milvus["remote_enabled"])
+
+    neo4j = cfg.get("neo4j", {}) or {}
+    if isinstance(neo4j, dict):
+        mapping = {
+            "uri": "mandol_neo4j_uri",
+            "user": "mandol_neo4j_user",
+            "password": "mandol_neo4j_password",
+            "database": "mandol_neo4j_database",
+        }
+        for k, attr in mapping.items():
+            v = neo4j.get(k)
+            if v not in (None, ""):
+                setattr(target, attr, v)

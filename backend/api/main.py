@@ -14,6 +14,7 @@ from ..routers import llm as llm_router
 from ..routers import system_admin as system_admin_router
 from ..services.agent_service import agent_service
 from ..services.background_service import background_service
+from ..services.config_loader import apply_external_stores_config
 from ..services.mandol_service import mandol_service
 from ..services.memory_service import memory_service
 from ..utils.logger import info, setup_logging
@@ -23,9 +24,16 @@ from .websocket_manager import ws_manager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     apply_env_overrides(settings)
+    # 启动时优先加载前端保存的外部存储配置（Milvus / Neo4j）
+    # 使其覆盖环境变量默认值，作为下次启动的默认连接
+    apply_external_stores_config(settings)
     settings.ensure_directories()
     setup_logging(settings.log_level)
     info("启动记忆智能问答平台后端")
+    info(
+        f"外部存储默认连接: Milvus={settings.mandol_milvus_uri}, "
+        f"Neo4j={settings.mandol_neo4j_uri}"
+    )
 
     # 初始化 Mandol 记忆引擎
     if settings.mandol_enabled:
