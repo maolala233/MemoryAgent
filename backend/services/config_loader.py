@@ -60,6 +60,17 @@ class ConfigLoader:
         with path.open("w", encoding="utf-8") as fh:
             yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
 
+    def load_model_store(self) -> Dict[str, Any]:
+        """加载本地模型（embedder / reranker）持久化配置。"""
+        return self.load("model_store")
+
+    def save_model_store(self, data: Dict[str, Any]) -> None:
+        """写入本地模型配置到 model_store.yaml。"""
+        path = self.config_dir / "model_store.yaml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as fh:
+            yaml.dump(data, fh, default_flow_style=False, allow_unicode=True)
+
 
 config_loader = ConfigLoader()
 
@@ -99,6 +110,43 @@ def get_external_stores_config() -> Dict[str, Any]:
 def save_external_stores_config(data: Dict[str, Any]) -> None:
     """写入外部存储（Milvus / Neo4j）配置。"""
     config_loader.save_external_stores(data)
+
+
+def get_model_store_config() -> Dict[str, Any]:
+    """获取本地模型（embedder / reranker）持久化配置。"""
+    return config_loader.load_model_store()
+
+
+def save_model_store_config(data: Dict[str, Any]) -> None:
+    """写入本地模型（embedder / reranker）配置。"""
+    config_loader.save_model_store(data)
+
+
+def apply_model_store_config(target=None) -> None:
+    """启动时把 model_store.yaml 中的值写入 settings.mandol_embedder_local_path 等。
+
+    优先级：YAML 持久化配置 > settings 类默认值 > 环境变量。
+    """
+    cfg = get_model_store_config()
+    if not cfg:
+        return
+    target = target or settings
+
+    for kind in ("embedder", "reranker"):
+        block = cfg.get(kind, {}) or {}
+        if not isinstance(block, dict):
+            continue
+        if kind == "embedder":
+            local_attr = "mandol_embedder_local_path"
+            offline_attr = "mandol_embedder_offline_only"
+        else:
+            local_attr = "mandol_reranker_local_path"
+            offline_attr = "mandol_reranker_offline_only"
+        lp = block.get("local_path")
+        if lp not in (None, ""):
+            setattr(target, local_attr, str(lp))
+        if "offline_only" in block:
+            setattr(target, offline_attr, bool(block["offline_only"]))
 
 
 def apply_external_stores_config(target=None) -> None:

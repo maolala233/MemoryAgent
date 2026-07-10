@@ -25,6 +25,8 @@ interface MandolConfig {
     remote_base_url: string;
     remote_api_path: string;
     remote_timeout: number;
+    local_path: string;
+    offline_only: boolean;
   };
   reranker: {
     model: string;
@@ -33,6 +35,8 @@ interface MandolConfig {
     remote_base_url: string;
     remote_api_path: string;
     remote_timeout: number;
+    local_path: string;
+    offline_only: boolean;
   };
   system: {
     chunk_max_tokens: number;
@@ -82,7 +86,6 @@ export default function SettingsPage() {
     | "reranker"
     | "system"
     | "vector_db"
-    | "local_models"
   >("model_profiles");
 
   useEffect(() => {
@@ -93,8 +96,12 @@ export default function SettingsPage() {
     setIsLoading(true);
     try {
       const data = await api.get<{ mandol: MandolConfig; is_ready: boolean }>("settings/config");
-      // 兼容旧后端：确保 external_stores 存在
+      // 兼容旧后端：补齐新增字段
       const m = data.mandol;
+      m.embedder.local_path = m.embedder.local_path ?? "";
+      m.embedder.offline_only = m.embedder.offline_only ?? false;
+      m.reranker.local_path = m.reranker.local_path ?? "";
+      m.reranker.offline_only = m.reranker.offline_only ?? false;
       if (!m.external_stores) {
         (m as any).external_stores = {
           milvus: { uri: "", user: "", password: "", db_name: "", collection: "mandol_memory_units", token: "", secure: false, remote_enabled: true },
@@ -208,7 +215,6 @@ export default function SettingsPage() {
             {[
               { key: "model_profiles" as const, label: "问答模型（多源）", icon: "hub" },
               { key: "llm" as const, label: "Mandol LLM", icon: "smart_toy" },
-              { key: "local_models" as const, label: "本地模型", icon: "folder_zip" },
               { key: "embedder" as const, label: "Embedding 嵌入模型", icon: "data_object" },
               { key: "reranker" as const, label: "Reranker 重排序模型", icon: "sort" },
               { key: "vector_db" as const, label: "向量库 / 图数据库", icon: "storage" },
@@ -233,11 +239,6 @@ export default function SettingsPage() {
           {/* 问答模型（多源）配置 */}
           {activeTab === "model_profiles" && (
             <LLMProfileManager />
-          )}
-
-          {/* 本地模型管理（离线/已下载） */}
-          {activeTab === "local_models" && (
-            <LocalModelManager />
           )}
 
           {/* LLM 配置 */}
@@ -281,6 +282,13 @@ export default function SettingsPage() {
                 </>
               )}
               <NumberField label="向量维度" value={config.embedder.dimension} onChange={(v) => updateField("embedder.dimension", v)} />
+              <LocalModelSelector
+                kind="embedder"
+                config={config}
+                updateField={updateField}
+                onMessage={setMessage}
+                showOfflineHint={!config.embedder.use_remote}
+              />
             </section>
           )}
 
@@ -307,6 +315,13 @@ export default function SettingsPage() {
                   <NumberField label="超时(秒)" value={config.reranker.remote_timeout} onChange={(v) => updateField("reranker.remote_timeout", v)} />
                 </>
               )}
+              <LocalModelSelector
+                kind="reranker"
+                config={config}
+                updateField={updateField}
+                onMessage={setMessage}
+                showOfflineHint={!config.reranker.use_remote}
+              />
             </section>
           )}
 
@@ -570,10 +585,229 @@ function VectorDbConfig({
   );
 }
 
+// =============== 本地模型选择器（嵌入到 Embedder / Reranker 配置中） ===============
+
+interface LocalModel {
+  id: string;
+  path: string;
+  root: string;
+}
+
+function LocalModelSelector({
+  kind,
+  config,
+  updateField,
+  onMessage,
+  showOfflineHint = true,
+}: {
+  kind: "embedder" | "reranker";
+  config: MandolConfig;
+  updateField: (path: string, value: any) => void;
+  onMessage: (m: string) => void;
+  showOfflineHint?: boolean;
+}) {
+  const [localModels, setLocalModels] = useState<LocalModel[]>([]);
+  const [scanning, setScanning] = useState(false);
+  const [selectedPath, setSelectedPath] = useState<string>(
+    kind === "embedder" ? config.embedder.local_path : config.reranker.local_path
+  );
+  const [picking, setPicking] = useState(false);
+
+  const sub = kind === "embedder" ? config.embedder : config.reranker;
+  const subKey = kind; // "embedder" | "reranker"
+
+  const filterMatches = (m: LocalModel) => {
+    const id = m.id.toLowerCase();
+    if (kind === "embedder") {
+      return (
+        id.includes("embed") ||
+        id.includes("minilm") ||
+        id.includes("bge") ||
+        id.includes("gte") ||
+        id.includes("mpnet") ||
+        id.includes("e5") ||
+        id.includes("sentence")
+      );
+    }
+    return (
+      id.includes("rerank") ||
+      id.includes("cross") ||
+      id.includes("marco")
+    );
+  };
+
+  const scan = async () => {
+    setScanning(true);
+    try {
+      const data = await api.get<{ models: LocalModel[]; roots: string[]; hf_home: string }>(
+        "system/models/local"
+      );
+      setLocalModels((data.models || []).filter(filterMatches));
+    } catch (err) {
+      onMessage(`扫描本地模型失败: ${err instanceof ApiError ? err.detail : (err as Error).message}`);
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  useEffect(() => {
+    scan();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
+
+  useEffect(() => {
+    setSelectedPath(sub.local_path || "");
+  }, [sub.local_path]);
+
+  const handlePick = async (path: string) => {
+    setPicking(true);
+    try {
+      await api.post("system/models/select-local", { kind, path });
+      // 同步到主配置 form
+      updateField(`${subKey}.local_path`, path);
+      updateField(`${subKey}.offline_only`, true);
+      setSelectedPath(path);
+      onMessage(`已为 ${kind === "embedder" ? "Embedding" : "Reranker"} 选择本地模型，下次启动会从本地路径加载`);
+    } catch (err) {
+      onMessage(`选择失败: ${err instanceof ApiError ? err.detail : (err as Error).message}`);
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const handleClear = async () => {
+    setPicking(true);
+    try {
+      await api.post("system/models/clear-local", { kind });
+      updateField(`${subKey}.local_path`, "");
+      updateField(`${subKey}.offline_only`, false);
+      setSelectedPath("");
+      onMessage(`已清除 ${kind === "embedder" ? "Embedding" : "Reranker"} 的本地模型选择（回退到 ${sub.model}）`);
+    } catch (err) {
+      onMessage(`清除失败: ${err instanceof ApiError ? err.detail : (err as Error).message}`);
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const toggleOffline = (v: boolean) => {
+    updateField(`${subKey}.offline_only`, v);
+  };
+
+  return (
+    <div className="bg-surface-container-low rounded-lg p-4 space-y-3 border border-border">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h4 className="text-body-md font-semibold text-on-surface flex items-center gap-1">
+            <Icon name="folder_zip" className="text-[16px]" />
+            本地缓存模型
+            <span className="text-label-sm px-1.5 py-0.5 rounded bg-primary/10 text-primary font-normal">
+              离线拉起
+            </span>
+          </h4>
+          {showOfflineHint && (
+            <p className="text-body-sm text-on-surface-variant mt-1">
+              从本地 HF 缓存（~/.cache/huggingface）或 <code>data/models/</code> 选用已下载的模型。
+              启用后可避免每次启动时从远端下载。
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={scan}
+          disabled={scanning}
+          className="text-body-sm bg-surface text-on-surface px-2 py-1 rounded-md hover:bg-surface-container-high disabled:opacity-50 whitespace-nowrap"
+        >
+          <Icon name="refresh" className="text-[14px] inline-block mr-1" />
+          {scanning ? "扫描中…" : "刷新"}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-2 items-end">
+        <div>
+          <label className="block text-body-sm text-on-surface-variant mb-1">当前本地路径</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={selectedPath || ""}
+              onChange={(e) => setSelectedPath(e.target.value)}
+              onBlur={() => updateField(`${subKey}.local_path`, selectedPath)}
+              placeholder="（未选择：使用上方「模型名称」从远端加载）"
+              className="flex-1 bg-surface text-on-surface border border-border rounded-md px-3 py-2 text-body-sm font-mono"
+            />
+            {selectedPath && (
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={picking}
+                className="text-body-sm text-error hover:underline whitespace-nowrap"
+              >
+                清除
+              </button>
+            )}
+          </div>
+        </div>
+        <label className="flex items-center gap-2 cursor-pointer whitespace-nowrap pb-2">
+          <input
+            type="checkbox"
+            checked={!!sub.offline_only}
+            onChange={(e) => toggleOffline(e.target.checked)}
+            className="w-4 h-4 accent-primary"
+          />
+          <span className="text-body-sm">强制离线（不联网）</span>
+        </label>
+      </div>
+
+      {localModels.length === 0 ? (
+        <p className="text-body-sm text-on-surface-variant p-2 bg-surface rounded-md">
+          {scanning ? "正在扫描本地模型…" : "未在本地找到匹配的模型。点击「刷新」重新扫描，或把模型放到 HF 缓存 / data/models 下。"}
+        </p>
+      ) : (
+        <div className="space-y-1 max-h-60 overflow-y-auto custom-scrollbar">
+          {localModels.map((m) => {
+            const isCurrent = selectedPath === m.path || sub.local_path === m.path;
+            return (
+              <div
+                key={m.path}
+                className={[
+                  "flex items-center gap-2 p-2 rounded-md border text-body-sm",
+                  isCurrent
+                    ? "border-primary bg-primary-container/30"
+                    : "border-border bg-surface hover:bg-surface-container",
+                ].join(" ")}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-on-surface font-medium truncate" title={m.id}>
+                    {m.id}
+                  </div>
+                  <div className="text-on-surface-variant font-mono truncate text-[12px]" title={m.path}>
+                    {m.path}
+                  </div>
+                </div>
+                {isCurrent ? (
+                  <span className="text-primary font-semibold whitespace-nowrap text-body-sm">✓ 当前</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handlePick(m.path)}
+                    disabled={picking}
+                    className="bg-primary text-on-primary px-3 py-1 rounded-md text-body-sm font-medium hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
+                  >
+                    选用
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // =============== LLM Profile 管理 ===============
 
 import type { LLMProfile } from "@/types";
-import { LocalModelManager } from "@/components/settings/LocalModelManager";
 
 interface LLMProfileForm {
   id?: string;

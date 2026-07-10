@@ -254,10 +254,12 @@ export function ForceGraph({
         n.fy = p.y;
       }
     } else if (panningRef.current) {
+      // 先把 pan 状态快照下来，避免 React 调度期间 panningRef.current 被 onMouseUp 置空
+      const pan = panningRef.current;
       setView((v) => ({
         ...v,
-        x: e.clientX - panningRef.current!.x,
-        y: e.clientY - panningRef.current!.y,
+        x: e.clientX - pan.x,
+        y: e.clientY - pan.y,
       }));
     }
   };

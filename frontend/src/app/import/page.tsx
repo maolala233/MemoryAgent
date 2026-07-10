@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Icon } from "@/components/shared/Icon";
@@ -10,11 +10,26 @@ import { useDocumentImport } from "@/hooks/useDocumentImport";
 import type { ImportStep } from "@/hooks/useDocumentImport";
 
 const STEPS: { key: ImportStep; label: string; icon: string }[] = [
-  { key: "upload", label: "Upload", icon: "upload_file" },
-  { key: "parse", label: "Parse", icon: "text_snippet" },
-  { key: "convert", label: "Convert", icon: "transform" },
-  { key: "save", label: "Save", icon: "save" },
+  { key: "upload", label: "上传文件", icon: "upload_file" },
+  { key: "parse", label: "解析内容", icon: "text_snippet" },
+  { key: "convert", label: "生成记忆", icon: "transform" },
+  { key: "save", label: "完成", icon: "save" },
 ];
+
+// 中文类型映射（数据库里仍是英文枚举，仅 UI 翻译）
+const MEMORY_TYPE_LABELS: Record<string, string> = {
+  note: "笔记",
+  imported_document: "导入文档",
+  decision: "决策",
+  summary: "摘要",
+  reference: "参考",
+  log: "日志",
+  spec: "规格",
+};
+const STRATEGY_LABELS: Record<string, string> = {
+  section: "按章节切分",
+  size: "按固定长度切分",
+};
 
 function StepIndicator({
   current,
@@ -25,7 +40,7 @@ function StepIndicator({
 }) {
   const currentIdx = STEPS.findIndex((s) => s.key === current);
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex items-center justify-center gap-2 flex-wrap">
       {STEPS.map((step, i) => {
         const done = i < currentIdx || progress === 100;
         const active = i === currentIdx && progress < 100;
@@ -82,10 +97,29 @@ export default function ImportPage() {
   const [dragOver, setDragOver] = useState(false);
   const [convertOpts, setConvertOpts] = useState({
     project_id: "",
-    memory_type: "note",
+    memory_type: "imported_document",
     strategy: "section",
+    build_mandol: true,
   });
+  const [savingStatus, setSavingStatus] = useState<string>("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // 保存阶段持续显示进度文字（避免长时间静默让用户以为卡死）
+  useEffect(() => {
+    if (step !== "save" || !isLoading) {
+      setSavingStatus("");
+      return;
+    }
+    setSavingStatus("正在保存记忆文件…");
+    const t1 = setTimeout(() => setSavingStatus("正在调用 LLM 生成摘要（可能需要 1-3 分钟）…"), 1500);
+    const t2 = setTimeout(() => setSavingStatus("正在抽取实体与事件…"), 60_000);
+    const t3 = setTimeout(() => setSavingStatus("正在构建高阶记忆…"), 120_000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      clearTimeout(t3);
+    };
+  }, [step, isLoading]);
 
   const onFile = useCallback(
     (file: File) => {
@@ -114,11 +148,11 @@ export default function ImportPage() {
 
   const onSave = () => {
     if (!converted || !upload) return;
-    save(upload.file_id, converted.memory_files);
+    save(upload.file_id, converted.memory_files, convertOpts.build_mandol);
   };
 
   return (
-    <AppShell title="文档导入" subtitle="PDF / DOCX / MD → 记忆">
+    <AppShell title="文档导入" subtitle="PDF / DOCX / MD / TXT → 基础记忆">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Step indicator */}
@@ -163,16 +197,19 @@ export default function ImportPage() {
                 />
               </div>
               <h3 className="text-body-lg font-bold text-on-surface mb-1">
-                Drop your file here
+                将文件拖到此处
               </h3>
-              <p className="text-body-md text-on-surface-variant mb-4">
-                or click to browse. Supports PDF, DOCX, MD, TXT
+              <p className="text-body-md text-on-surface-variant mb-1">
+                或点击下方按钮选择文件
+              </p>
+              <p className="text-body-sm text-outline mb-4">
+                支持 PDF / DOCX / MD / TXT，单文件最大 50MB
               </p>
               <button
                 onClick={() => inputRef.current?.click()}
                 className="px-6 py-2.5 bg-primary text-on-primary rounded-lg font-bold text-body-md hover:opacity-90 transition-opacity"
               >
-                Choose File
+                选择文件
               </button>
               <input
                 ref={inputRef}
@@ -190,23 +227,26 @@ export default function ImportPage() {
           {/* Step 2: Parse result */}
           {step === "parse" && (
             <div className="bg-surface border border-border rounded-xl p-6 space-y-4">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between flex-wrap gap-2">
                 <h3 className="text-body-lg font-bold text-on-surface">
-                  Parsed Content
+                  已解析内容
                 </h3>
                 {upload && (
                   <Pill variant="info" size="md">
-                    {upload.filename} · {upload.file_size} bytes
-                    {upload.page_count ? ` · ${upload.page_count} pages` : ""}
+                    {upload.filename} · {(upload.file_size / 1024).toFixed(1)} KB
+                    {upload.page_count ? ` · ${upload.page_count} 页` : ""}
                   </Pill>
                 )}
               </div>
-              {isLoading && <Loading label="Parsing document..." />}
+              {isLoading && <Loading label="正在解析文档…" />}
               {parsed && (
                 <>
                   <p className="text-body-md text-on-surface-variant">
-                    Extracted <strong>{parsed.total_chunks}</strong> chunks from the
-                    document.
+                    共抽取 <strong>{parsed.total_chunks}</strong> 个文本片段
+                    {parsed.metadata && (parsed.metadata as Record<string, unknown>).title
+                      ? `（标题：${String((parsed.metadata as Record<string, unknown>).title)}）`
+                      : ""}
+                    。
                   </p>
                   <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-2 bg-surface-container-low p-3 rounded-lg">
                     {parsed.chunks.slice(0, 5).map((c) => (
@@ -221,7 +261,7 @@ export default function ImportPage() {
                             </span>
                           )}
                           <span className="ml-auto text-label-sm text-outline">
-                            ~{c.tokens} tokens
+                            约 {c.tokens} tokens
                           </span>
                         </div>
                         <p className="text-body-sm text-on-surface line-clamp-3">
@@ -231,7 +271,7 @@ export default function ImportPage() {
                     ))}
                     {parsed.chunks.length > 5 && (
                       <p className="text-label-sm text-on-surface-variant text-center pt-2">
-                        +{parsed.chunks.length - 5} more chunks...
+                        还有 {parsed.chunks.length - 5} 个片段未显示…
                       </p>
                     )}
                   </div>
@@ -244,12 +284,12 @@ export default function ImportPage() {
           {step === "convert" && (
             <div className="bg-surface border border-border rounded-xl p-6 space-y-4">
               <h3 className="text-body-lg font-bold text-on-surface">
-                Convert to Memory
+                生成基础记忆
               </h3>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-label-md text-on-surface-variant mb-1">
-                    Project ID
+                    项目 ID（可选）
                   </label>
                   <input
                     type="text"
@@ -257,13 +297,13 @@ export default function ImportPage() {
                     onChange={(e) =>
                       setConvertOpts({ ...convertOpts, project_id: e.target.value })
                     }
-                    placeholder="optional"
+                    placeholder="不填则归到默认"
                     className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
                   />
                 </div>
                 <div>
                   <label className="block text-label-md text-on-surface-variant mb-1">
-                    Memory type
+                    记忆类型
                   </label>
                   <select
                     value={convertOpts.memory_type}
@@ -272,10 +312,10 @@ export default function ImportPage() {
                     }
                     className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
                   >
-                    {["note", "decision", "summary", "reference", "log", "spec"].map(
+                    {["imported_document", "note", "decision", "summary", "reference", "log", "spec"].map(
                       (t) => (
                         <option key={t} value={t}>
-                          {t}
+                          {MEMORY_TYPE_LABELS[t] ?? t}
                         </option>
                       ),
                     )}
@@ -283,7 +323,7 @@ export default function ImportPage() {
                 </div>
                 <div>
                   <label className="block text-label-md text-on-surface-variant mb-1">
-                    Strategy
+                    切分策略
                   </label>
                   <select
                     value={convertOpts.strategy}
@@ -292,29 +332,52 @@ export default function ImportPage() {
                     }
                     className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
                   >
-                    <option value="section">Section-aware</option>
-                    <option value="size">Fixed-size chunks</option>
+                    {Object.entries(STRATEGY_LABELS).map(([k, v]) => (
+                      <option key={k} value={k}>
+                        {v}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
-              {isLoading && <Loading label="Converting to memories..." />}
+              <label className="flex items-start gap-2 text-body-md text-on-surface-variant cursor-pointer bg-surface-container-low rounded-lg p-3">
+                <input
+                  type="checkbox"
+                  checked={convertOpts.build_mandol}
+                  onChange={(e) =>
+                    setConvertOpts({ ...convertOpts, build_mandol: e.target.checked })
+                  }
+                  className="rounded border-border mt-0.5"
+                />
+                <span>
+                  <span className="font-bold text-on-surface">
+                    保存时同步触发 Mandol 高阶记忆构建
+                  </span>
+                  <span className="block text-label-md text-outline mt-0.5">
+                    包含 LLM 摘要、实体 / 事件抽取、高阶记忆构建，需 1-3 分钟。
+                    关闭后只写基础记忆文件，速度更快。
+                  </span>
+                </span>
+              </label>
+              {isLoading && (
+                <Loading label="正在生成基础记忆文件…" />
+              )}
               {converted && (
                 <div className="space-y-2">
                   <p className="text-body-md text-on-surface-variant">
-                    Generated <strong>{converted.memory_files.length}</strong> memory
-                    file(s):
+                    已生成 <strong>{converted.memory_files.length}</strong> 个基础记忆文件：
                   </p>
                   {converted.memory_files.map((m, i) => (
                     <div
-                      key={i}
+                      key={m.rel_path || i}
                       className="bg-surface-container-low border border-border rounded-lg p-3"
                     >
-                      <p className="font-mono text-body-sm text-primary mb-1">
+                      <p className="font-mono text-body-sm text-primary mb-1 break-all">
                         {m.rel_path}
                       </p>
                       <p className="text-body-sm text-on-surface-variant line-clamp-2">
-                        {(m.frontmatter.summary as string) ||
-                          m.content.slice(0, 140) + "..."}
+                        {String(m.frontmatter?.summary ?? "") ||
+                          (m.content ? m.content.slice(0, 140) + "..." : "")}
                       </p>
                     </div>
                   ))}
@@ -325,7 +388,7 @@ export default function ImportPage() {
                   onClick={reset}
                   className="px-4 py-2 text-body-md text-on-surface-variant hover:bg-surface-container-low rounded-lg"
                 >
-                  Restart
+                  重新开始
                 </button>
                 {!converted && (
                   <button
@@ -334,7 +397,7 @@ export default function ImportPage() {
                     className="px-4 py-2 bg-primary text-on-primary rounded-lg font-bold text-body-md hover:opacity-90 disabled:opacity-50 flex items-center gap-1"
                   >
                     <Icon name="transform" className="text-[18px]" />
-                    Convert
+                    生成基础记忆
                   </button>
                 )}
                 {converted && (
@@ -344,15 +407,41 @@ export default function ImportPage() {
                     className="px-4 py-2 bg-primary text-on-primary rounded-lg font-bold text-body-md hover:opacity-90 disabled:opacity-50 flex items-center gap-1"
                   >
                     <Icon name="save" className="text-[18px]" />
-                    Save {converted.memory_files.length} Memories
+                    保存 {converted.memory_files.length} 个记忆
+                    {convertOpts.build_mandol && "（含 LLM 构建）"}
                   </button>
                 )}
               </div>
             </div>
           )}
 
-          {/* Step 4: Save result */}
-          {step === "save" && saved && (
+          {/* Step 4: Save (long-running with progress text) */}
+          {(step === "save" && isLoading) && (
+            <div className="bg-surface border border-border rounded-xl p-6 space-y-4">
+              <div className="text-center">
+                <div className="w-16 h-16 rounded-full bg-primary-fixed flex items-center justify-center mx-auto mb-4">
+                  <Icon
+                    name="hourglass_top"
+                    className="text-[32px] text-primary animate-pulse"
+                  />
+                </div>
+                <h3 className="text-body-lg font-bold text-on-surface mb-1">
+                  正在保存记忆…
+                </h3>
+                <p className="text-body-md text-on-surface-variant">
+                  {savingStatus || "请稍候…"}
+                </p>
+                {!convertOpts.build_mandol && (
+                  <p className="text-label-md text-outline mt-1">
+                    已跳过 Mandol 高阶记忆构建，仅写入基础记忆文件
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Save done */}
+          {step === "save" && saved && !isLoading && (
             <div className="bg-surface border border-border rounded-xl p-6">
               <div className="text-center mb-4">
                 <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-4">
@@ -366,8 +455,10 @@ export default function ImportPage() {
                   导入完成
                 </h3>
                 <p className="text-body-md text-on-surface-variant">
-                  已保存 <strong>{saved.saved_count}</strong> 个记忆文件
-                  {saved.mandol_synced ? ` · Mandol 同步 ${saved.mandol_synced} 条` : ""}
+                  已保存 <strong>{saved.saved_count}</strong> 个基础记忆文件
+                  {saved.mandol_synced
+                    ? ` · Mandol 同步 ${saved.mandol_synced} 条`
+                    : " · 未触发 Mandol 高阶构建"}
                 </p>
               </div>
 
@@ -386,7 +477,9 @@ export default function ImportPage() {
                   <summary className="p-3 cursor-pointer flex items-center gap-2 font-bold text-on-surface text-body-sm">
                     <Icon name="auto_awesome" className="text-primary text-[16px]" />
                     关键信息摘要（LLM 生成）
-                    <span className="text-label-sm text-on-surface-variant ml-auto font-mono">{saved.summary_path}</span>
+                    {saved.summary_path && (
+                      <span className="text-label-sm text-on-surface-variant ml-auto font-mono">{saved.summary_path}</span>
+                    )}
                   </summary>
                   <div className="px-3 pb-3 text-body-sm text-on-surface leading-relaxed whitespace-pre-wrap max-h-60 overflow-y-auto custom-scrollbar">
                     {saved.summary_text}
@@ -395,7 +488,9 @@ export default function ImportPage() {
               )}
 
               <details className="bg-surface-container-low rounded-lg mb-4">
-                <summary className="p-3 cursor-pointer text-body-sm font-bold text-on-surface">所有生成文件 ({saved.paths.length})</summary>
+                <summary className="p-3 cursor-pointer text-body-sm font-bold text-on-surface">
+                  所有生成文件（{saved.paths.length}）
+                </summary>
                 <div className="px-3 pb-3 text-left max-h-48 overflow-y-auto">
                   {saved.paths.map((p) => (
                     <p key={p} className="font-mono text-label-sm text-primary py-0.5 break-all">{p}</p>
@@ -403,7 +498,7 @@ export default function ImportPage() {
                 </div>
               </details>
 
-              <div className="flex justify-center gap-2">
+              <div className="flex justify-center gap-2 flex-wrap">
                 <button
                   onClick={reset}
                   className="px-4 py-2 border border-border text-on-surface-variant hover:bg-surface-container-low rounded-lg font-medium"

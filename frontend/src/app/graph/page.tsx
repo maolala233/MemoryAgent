@@ -177,7 +177,7 @@ export default function GraphPage() {
               <div className="space-y-3">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <EntitySearchInput
-                    label="🔎 关键词搜索（小白入口，不用记 UID）"
+                    label="🔎 关键词搜索"
                     value={neo4jCenterUid}
                     onChange={(uid) => setNeo4jCenterUid(uid)}
                     placeholder="比如：科创e贷、信贷、年度报告…"
@@ -234,7 +234,7 @@ export default function GraphPage() {
             {activeTab === "relationships" && (
               <div className="space-y-3">
                 <EntitySearchInput
-                  label="🔎 关键词搜索（小白入口）"
+                  label="🔎 关键词搜索"
                   value={relUid}
                   onChange={(uid) => setRelUid(uid)}
                   placeholder="比如：信贷产品、审批流程…"
@@ -271,7 +271,7 @@ export default function GraphPage() {
             {(activeTab === "trace" || activeTab === "coref") && (
               <div className="space-y-3">
                 <EntitySearchInput
-                  label="🔎 关键词搜索（小白入口）"
+                  label="🔎 关键词搜索"
                   value={traceUid}
                   onChange={(uid) => setTraceUid(uid)}
                   placeholder="比如：待办任务、授信审批…"

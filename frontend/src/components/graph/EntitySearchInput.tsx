@@ -39,7 +39,7 @@ const TRUNCATE = (s: string | undefined, n: number): string => {
 export function EntitySearchInput({
   value,
   onChange,
-  placeholder = "输入关键词搜索记忆单元…（小白入口）",
+  placeholder = "输入关键词搜索记忆单元",
   spaceName,
   label = "中心节点",
   disabled,

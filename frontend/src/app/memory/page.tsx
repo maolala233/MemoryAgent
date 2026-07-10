@@ -9,6 +9,7 @@ import { Loading } from "@/components/shared/Loading";
 import { Pill } from "@/components/shared/Pill";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { useMemory } from "@/hooks/useMemory";
+import { api } from "@/services/api";
 import type { MemoryDoc } from "@/types";
 
 function formatDate(iso?: string | null): string {
@@ -17,6 +18,30 @@ function formatDate(iso?: string | null): string {
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+
+// 状态/类型的友好显示名（数据库里仍是英文，仅在 UI 翻译）
+const STATUS_LABELS: Record<string, string> = {
+  active: "活跃",
+  verified: "已验证",
+  archived: "已归档",
+  draft: "草稿",
+};
+const TYPE_LABELS: Record<string, string> = {
+  note: "笔记",
+  imported_document: "导入文档",
+  meeting: "会议",
+  decision: "决策",
+  project: "项目",
+  workflow: "工作流",
+  reference: "参考",
+};
+const TRACK_LABELS: Record<string, string> = {
+  note: "笔记",
+  decision: "决策",
+  project: "项目",
+  workflow: "工作流",
+};
+const translateValue = (map: Record<string, string>, raw: string): string => map[raw] ?? raw;
 
 export default function MemoryVaultPage() {
   return (
@@ -34,6 +59,22 @@ function MemoryVaultContent() {
   const [status, setStatus] = useState("");
   const [hasOpenLoop, setHasOpenLoop] = useState(false);
   const [search, setSearch] = useState("");
+
+  // 一次性从后端拉取所有可选的 track / type 候选，避免被过滤后的 items 截断
+  const [trackOptions, setTrackOptions] = useState<string[]>([]);
+  const [typeOptions, setTypeOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    api
+      .get<{ tracks: string[]; memory_types: string[]; projects: string[] }>("search/filters")
+      .then((d) => {
+        setTrackOptions((d.tracks || []).filter(Boolean));
+        setTypeOptions((d.memory_types || []).filter(Boolean));
+      })
+      .catch(() => {
+        // 失败时回退到当前 items 中提取（行为同旧版）
+      });
+  }, []);
 
   useEffect(() => {
     const filter = searchParams.get("filter");
@@ -63,13 +104,20 @@ function MemoryVaultContent() {
     );
   }, [data, search]);
 
+  // 优先用后端返回的全量候选；若失败再回退到当前 items
   const tracks = useMemo(
-    () => Array.from(new Set(data?.items.map((m) => m.track).filter(Boolean))),
-    [data],
+    () =>
+      trackOptions.length > 0
+        ? trackOptions
+        : Array.from(new Set(data?.items.map((m) => m.track).filter(Boolean))) as string[],
+    [trackOptions, data],
   );
   const types = useMemo(
-    () => Array.from(new Set(data?.items.map((m) => m.memory_type).filter(Boolean))),
-    [data],
+    () =>
+      typeOptions.length > 0
+        ? typeOptions
+        : Array.from(new Set(data?.items.map((m) => m.memory_type).filter(Boolean))) as string[],
+    [typeOptions, data],
   );
 
   const clearFilters = () => {
@@ -81,7 +129,7 @@ function MemoryVaultContent() {
   };
 
   return (
-    <AppShell title="记忆库" subtitle={`${data?.total ?? 0} documents`}>
+    <AppShell title="记忆库" subtitle={`${data?.total ?? 0} 条`}>
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Toolbar */}
@@ -93,7 +141,7 @@ function MemoryVaultContent() {
               />
               <input
                 type="text"
-                placeholder="Filter memories..."
+                placeholder="搜索记忆（标题 / 关键词 / 路径）"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full pl-10 pr-4 py-2 bg-surface border border-border rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none text-body-md"
@@ -104,10 +152,10 @@ function MemoryVaultContent() {
               onChange={(e) => setTrack(e.target.value)}
               className="px-3 py-2 bg-surface border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
             >
-              <option value="">All tracks</option>
+              <option value="">全部轨道</option>
               {tracks.map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {translateValue(TRACK_LABELS, t)}
                 </option>
               ))}
             </select>
@@ -116,10 +164,10 @@ function MemoryVaultContent() {
               onChange={(e) => setType(e.target.value)}
               className="px-3 py-2 bg-surface border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
             >
-              <option value="">All types</option>
+              <option value="">全部类型</option>
               {types.map((t) => (
                 <option key={t} value={t}>
-                  {t}
+                  {translateValue(TYPE_LABELS, t)}
                 </option>
               ))}
             </select>
@@ -128,11 +176,11 @@ function MemoryVaultContent() {
               onChange={(e) => setStatus(e.target.value)}
               className="px-3 py-2 bg-surface border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
             >
-              <option value="">Any status</option>
-              <option value="active">Active</option>
-              <option value="verified">Verified</option>
-              <option value="archived">Archived</option>
-              <option value="draft">Draft</option>
+              <option value="">任意状态</option>
+              <option value="active">活跃</option>
+              <option value="verified">已验证</option>
+              <option value="archived">已归档</option>
+              <option value="draft">草稿</option>
             </select>
             <label className="flex items-center gap-2 text-body-md text-on-surface-variant cursor-pointer">
               <input
@@ -141,7 +189,7 @@ function MemoryVaultContent() {
                 onChange={(e) => setHasOpenLoop(e.target.checked)}
                 className="rounded border-border"
               />
-              Open loops only
+              仅显示未闭环
             </label>
             {(track || type || status || hasOpenLoop || search) && (
               <button
@@ -149,7 +197,7 @@ function MemoryVaultContent() {
                 className="text-label-md text-on-surface-variant hover:text-error transition-colors flex items-center gap-1"
               >
                 <Icon name="close" className="text-[14px]" />
-                Clear
+                清除筛选
               </button>
             )}
             <Link
@@ -157,31 +205,34 @@ function MemoryVaultContent() {
               className="ml-auto flex items-center gap-2 px-4 py-2 bg-primary text-on-primary rounded-lg font-bold text-body-md hover:opacity-90 transition-opacity"
             >
               <Icon name="add" className="text-[18px]" />
-              New Entry
+              新建记忆
             </Link>
           </div>
 
           {/* List */}
-          {isLoading && !data && <Loading label="Loading memories..." />}
+          {isLoading && !data && <Loading label="正在加载记忆…" />}
 
           {data && filtered.length === 0 && (
             <EmptyState
               icon="inventory_2"
-              title="No memories found"
-              description="Try adjusting your filters, or create a new memory entry."
+              title="未找到匹配的记忆"
+              description="尝试调整筛选条件，或新建一条记忆。"
               action={
                 <Link
                   href="/memory/new"
                   className="px-4 py-2 bg-primary text-on-primary rounded-lg font-bold text-body-md"
                 >
-                  + New Entry
+                  + 新建记忆
                 </Link>
               }
             />
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {filtered.map((m: MemoryDoc) => (
+            {filtered.map((m: MemoryDoc) => {
+              // 数据里偶有重复 keyword，去重以避免 React key 重复警告
+              const uniqueKeywords = Array.from(new Set(m.keywords || [])).slice(0, 3);
+              return (
               <Link
                 key={m.rel_path}
                 href={`/memory/${encodeURIComponent(m.rel_path)}`}
@@ -205,17 +256,17 @@ function MemoryVaultContent() {
                   )}
                 </div>
                 <p className="text-body-sm text-on-surface-variant mb-3 line-clamp-2">
-                  {m.summary || m.content.slice(0, 140) + "..." || "No summary."}
+                  {m.summary || m.content.slice(0, 140) + "..." || "无摘要。"}
                 </p>
                 <div className="flex flex-wrap items-center gap-1.5">
                   <Pill variant="info" size="sm">
-                    {m.track}
+                    {translateValue(TRACK_LABELS, m.track)}
                   </Pill>
-                  <Pill size="sm">{m.memory_type}</Pill>
+                  <Pill size="sm">{translateValue(TYPE_LABELS, m.memory_type)}</Pill>
                   <Pill variant={m.status === "verified" ? "success" : "default"} size="sm">
-                    {m.status}
+                    {translateValue(STATUS_LABELS, m.status)}
                   </Pill>
-                  {m.keywords.slice(0, 3).map((k) => (
+                  {uniqueKeywords.map((k) => (
                     <Pill key={k} variant="primary" size="sm">
                       #{k}
                     </Pill>
@@ -228,7 +279,8 @@ function MemoryVaultContent() {
                   {m.rel_path}
                 </p>
               </Link>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

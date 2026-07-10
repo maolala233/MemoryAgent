@@ -15,6 +15,7 @@ from ..services.config_loader import (
     get_external_stores_config,
     save_external_stores_config,
     save_models_config,
+    save_model_store_config,
 )
 from ..services.mandol_service import mandol_service
 
@@ -37,6 +38,9 @@ class EmbedderConfig(BaseModel):
     remote_base_url: str = ""
     remote_api_path: str = "/v1/embeddings"
     remote_timeout: int = 60
+    # 本地缓存：离线启动 / 不联网拉取
+    local_path: str = ""
+    offline_only: bool = False
 
 
 class RerankerConfig(BaseModel):
@@ -46,6 +50,9 @@ class RerankerConfig(BaseModel):
     remote_base_url: str = ""
     remote_api_path: str = "/v1/rerank"
     remote_timeout: int = 60
+    # 本地缓存：离线启动 / 不联网拉取
+    local_path: str = ""
+    offline_only: bool = False
 
 
 class SystemParams(BaseModel):
@@ -131,6 +138,8 @@ def get_config():
                 "remote_base_url": settings.mandol_embedder_remote_base_url,
                 "remote_api_path": settings.mandol_embedder_remote_api_path,
                 "remote_timeout": settings.mandol_embedder_remote_timeout,
+                "local_path": settings.mandol_embedder_local_path,
+                "offline_only": settings.mandol_embedder_offline_only,
             },
             "reranker": {
                 "model": settings.mandol_reranker_model,
@@ -139,6 +148,8 @@ def get_config():
                 "remote_base_url": settings.mandol_reranker_remote_base_url,
                 "remote_api_path": settings.mandol_reranker_remote_api_path,
                 "remote_timeout": settings.mandol_reranker_remote_timeout,
+                "local_path": settings.mandol_reranker_local_path,
+                "offline_only": settings.mandol_reranker_offline_only,
             },
             "system": {
                 "chunk_max_tokens": settings.mandol_chunk_max_tokens,
@@ -208,6 +219,8 @@ def update_config(req: SettingsConfigRequest):
         settings.mandol_embedder_remote_base_url = m.embedder.remote_base_url
         settings.mandol_embedder_remote_api_path = m.embedder.remote_api_path
         settings.mandol_embedder_remote_timeout = m.embedder.remote_timeout
+        settings.mandol_embedder_local_path = m.embedder.local_path
+        settings.mandol_embedder_offline_only = bool(m.embedder.offline_only)
 
         # Reranker
         settings.mandol_reranker_model = m.reranker.model
@@ -216,6 +229,8 @@ def update_config(req: SettingsConfigRequest):
         settings.mandol_reranker_remote_base_url = m.reranker.remote_base_url
         settings.mandol_reranker_remote_api_path = m.reranker.remote_api_path
         settings.mandol_reranker_remote_timeout = m.reranker.remote_timeout
+        settings.mandol_reranker_local_path = m.reranker.local_path
+        settings.mandol_reranker_offline_only = bool(m.reranker.offline_only)
 
         # 系统参数
         s = m.system
@@ -278,6 +293,22 @@ def update_config(req: SettingsConfigRequest):
         except Exception as exc:
             from logging import getLogger as _getLogger
             _getLogger("codex_memory").warning(f"保存外部存储配置失败: {exc}")
+
+        # 持久化本地模型（embedder / reranker）选择，启动时默认加载
+        try:
+            save_model_store_config({
+                "embedder": {
+                    "local_path": settings.mandol_embedder_local_path,
+                    "offline_only": settings.mandol_embedder_offline_only,
+                },
+                "reranker": {
+                    "local_path": settings.mandol_reranker_local_path,
+                    "offline_only": settings.mandol_reranker_offline_only,
+                },
+            })
+        except Exception as exc:
+            from logging import getLogger as _getLogger
+            _getLogger("codex_memory").warning(f"保存模型存储配置失败: {exc}")
 
         # 更新启用状态
         if m.enabled and not mandol_service.is_enabled:
