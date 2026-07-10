@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     mandol_embedder_remote_base_url: str = ""
     mandol_embedder_remote_api_path: str = "/v1/embeddings"
     mandol_embedder_remote_timeout: int = 60
+    # 本地嵌入模型目录（离线模式优先使用此路径加载）
+    mandol_embedder_local_path: str = ""
+    mandol_embedder_offline_only: bool = False
 
     # ---- Mandol Reranker ----
     mandol_reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -94,6 +97,14 @@ class Settings(BaseSettings):
     mandol_reranker_remote_base_url: str = ""
     mandol_reranker_remote_api_path: str = "/v1/rerank"
     mandol_reranker_remote_timeout: int = 60
+    # 本地 reranker 模型目录（离线模式优先使用此路径加载）
+    mandol_reranker_local_path: str = ""
+    mandol_reranker_offline_only: bool = False
+
+    # ---- HuggingFace 缓存 ----
+    hf_home: str = ""  # 为空则使用默认 ~/.cache/huggingface
+    hf_endpoint: str = "https://hf-mirror.com"
+    hf_offline: bool = False  # 开启后只使用本地缓存模型
 
     # ---- Mandol 外部存储：Neo4j 图数据库 ----
     mandol_neo4j_uri: str = "bolt://localhost:7687"
@@ -102,13 +113,29 @@ class Settings(BaseSettings):
     mandol_neo4j_database: str = "neo4j"
 
     # ---- Mandol 外部存储：Milvus 向量数据库 ----
-    # 默认使用 milvus-lite 嵌入式（uri=本地 db 文件路径）。要切换到 Milvus server，
-    # 将 uri 改为 http://host:19530。
-    mandol_milvus_uri: str = "data/mandol/milvus.db"
+    # 远程模式：uri 形如 "http://milvus-host:19530"
+    # 本地嵌入式：uri 形如本地 db 文件路径（data/mandol/milvus.db）
+    mandol_milvus_uri: str = "http://localhost:19530"
     mandol_milvus_user: str = ""
     mandol_milvus_password: str = ""
     mandol_milvus_db: str = ""
     mandol_milvus_collection: str = "mandol_memory_units"
+    mandol_milvus_token: str = ""  # 用于 Milvus 的鉴权 token
+    mandol_milvus_secure: bool = False  # https
+    # 远程 Milvus 是否启用，关闭时回退到嵌入式
+    mandol_milvus_remote_enabled: bool = True
+
+    # ---- 远程 Milvus 用于配置/缓存存储 ----
+    # 专门用于存储应用配置项和缓存 KV 数据（与 mandol_milvus_* 同库，但不同 collection）
+    app_milvus_uri: str = "http://localhost:19530"
+    app_milvus_user: str = ""
+    app_milvus_password: str = ""
+    app_milvus_db: str = ""
+    app_milvus_token: str = ""
+    app_milvus_secure: bool = False
+    app_milvus_config_collection: str = "codex_config"
+    app_milvus_cache_collection: str = "codex_cache"
+    app_milvus_remote_enabled: bool = True
 
     # ---- Mandol 系统参数 ----
     mandol_chunk_max_tokens: int = 512
@@ -130,6 +157,14 @@ class Settings(BaseSettings):
         """创建所有必需的目录。"""
         for path in (self.vault_dir, self.upload_dir, self.db_path.parent, self.mandol_storage_dir):
             path.mkdir(parents=True, exist_ok=True)
+        # HuggingFace 缓存目录
+        if self.hf_home:
+            os.environ["HF_HOME"] = self.hf_home
+            Path(self.hf_home).mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("HF_ENDPOINT", self.hf_endpoint or "https://hf-mirror.com")
+        if self.hf_offline:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     @property
     def sqlite_url(self) -> str:

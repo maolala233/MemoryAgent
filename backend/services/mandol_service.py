@@ -43,13 +43,14 @@ RELATIONSHIP_TYPES = [
 ]
 
 
-def _unit_to_dict(unit) -> Dict[str, Any]:
+def _unit_to_dict(unit, space_name: Optional[str] = None) -> Dict[str, Any]:
     """将 MemoryUnit 转换为可序列化字典。"""
     return {
         "uid": str(unit.uid),
         "raw_data": unit.raw_data,
         "metadata": unit.metadata,
         "text": unit.raw_data.get("text_content", ""),
+        "space_name": space_name,
     }
 
 
@@ -83,9 +84,25 @@ class MandolService:
         self._storage_root: Optional[str] = None
         self._save_in_progress = threading.Event()
         self._last_save_result: Optional[Dict[str, Any]] = None
+        # 仪表盘缓存：避免每次刷新都触发 list_units() / Neo4j count / Milvus 探测
+        self._stats_cache: Optional[Dict[str, Any]] = None
+        self._stats_cache_ts: float = 0.0
+        self._external_cache: Optional[Dict[str, Any]] = None
+        self._external_cache_ts: float = 0.0
 
     # 进程内单例：MilvusUnitStore 持有 milvus.db 的 fcntl 锁，重复创建会冲突
     _unit_store: Optional[Any] = None
+
+    # 缓存 TTL（秒）：仪表盘刷新频繁时仍能保证 5s 内一致
+    _STATS_CACHE_TTL: float = 5.0
+    _EXTERNAL_CACHE_TTL: float = 10.0
+
+    def _invalidate_dashboard_caches(self) -> None:
+        """数据变更时清除仪表盘缓存。"""
+        self._stats_cache = None
+        self._stats_cache_ts = 0.0
+        self._external_cache = None
+        self._external_cache_ts = 0.0
 
     # ---------------- 生命周期 ----------------
     def initialize(self) -> bool:
@@ -192,7 +209,7 @@ class MandolService:
         return Neo4jGraphStore(config=cfg)
 
     def _build_milvus_unit_store(self, embedding_dim: int) -> Any:
-        """构造 Milvus UnitStore（支持 milvus-lite 嵌入式，uri=file path）。
+        """构造 Milvus UnitStore（支持 milvus-lite 嵌入式，uri=file path 或远程 server）。
 
         进程内单例缓存 — 避免 reset / reload 时多次实例化导致 fcntl 锁冲突。
         """
@@ -201,8 +218,15 @@ class MandolService:
         from mandol.infrastructure.milvus_unit_store import MilvusUnitStore
         from mandol.infrastructure.config import MilvusConfig
 
+        uri = settings.mandol_milvus_uri
+        # 关闭远程时回退到嵌入式
+        if not settings.mandol_milvus_remote_enabled:
+            local_path = Path("data/mandol/milvus.db")
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            uri = str(local_path)
+
         cfg = MilvusConfig(
-            uri=settings.mandol_milvus_uri,
+            uri=uri,
             user=settings.mandol_milvus_user,
             password=settings.mandol_milvus_password,
             db_name=settings.mandol_milvus_db,
@@ -220,10 +244,21 @@ class MandolService:
         """根据 settings 构建 MemorySystemConfig。"""
         from mandol import MemorySystemConfig
 
+        # 决定 embedder / reranker 实际使用的模型标识：
+        # 优先使用本地路径，否则使用远端/默认模型名
+        embedder_id = settings.mandol_embedder_local_path or settings.mandol_embedder_model
+        reranker_id = settings.mandol_reranker_local_path or settings.mandol_reranker_model
+
+        # 设置 HuggingFace 离线环境变量（仅当开启 offline_only 时）
+        import os
+        if settings.mandol_embedder_offline_only or settings.mandol_reranker_offline_only or settings.hf_offline:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
         return MemorySystemConfig(
-            embedder_model=settings.mandol_embedder_model,
+            embedder_model=embedder_id,
             embedder_device=settings.mandol_embedder_device,
-            reranker_model=settings.mandol_reranker_model,
+            reranker_model=reranker_id,
             reranker_device=settings.mandol_reranker_device,
             llm_model=settings.mandol_llm_model,
             embedder_dim=settings.mandol_embedder_dim,
@@ -329,6 +364,7 @@ class MandolService:
             system.semantic_map.add_unit(unit, space_names=[space_name], ensure_embedding=True)
         else:
             system.add(unit)
+        self._invalidate_dashboard_caches()
         return _unit_to_dict(unit)
 
     def add_many(
@@ -357,6 +393,7 @@ class MandolService:
             if sp:
                 system.semantic_map.create_space(sp)
                 system.semantic_map.add_unit_to_space(unit.uid, sp)
+        self._invalidate_dashboard_caches()
         return [_unit_to_dict(u) for u in units]
 
     def sync_document(
@@ -390,6 +427,7 @@ class MandolService:
                 system.graph.delete_unit(Uid(uid))
             except Exception:
                 pass
+            self._invalidate_dashboard_caches()
             return True
         except Exception as exc:
             warn(f"删除单元失败 {uid}: {exc}")
@@ -408,6 +446,36 @@ class MandolService:
         units = system.semantic_map.list_units()
         return [_unit_to_dict(u) for u in units[offset:offset + limit]]
 
+    def _list_units_in_kind_space(self, kind: str, limit: int = 500) -> List[Dict[str, Any]]:
+        """按类型(knowledge_entity / episodic_event / ...) 列出对应空间内的单元。"""
+        from mandol.application.legacy.multidim_semantic_graph import SpaceNamingPolicy
+        system = self._require()
+        naming = SpaceNamingPolicy()
+        root = str(getattr(system, "_root", "root"))
+        method = getattr(naming, kind, None)
+        if method is None:
+            return []
+        try:
+            space = method(root)
+            units = system.semantic_map.get_units_in_spaces([space])
+        except Exception as exc:
+            warn(f"读取空间 {kind} 失败: {exc}")
+            return []
+        space_name = str(space)
+        return [_unit_to_dict(u, space_name=space_name) for u in units[:limit]]
+
+    def list_entities(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """列出所有实体（knowledge_entity 空间）。"""
+        return self._list_units_in_kind_space("knowledge_entity", limit=limit)
+
+    def list_events(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """列出所有事件（episodic_event 空间）。"""
+        return self._list_units_in_kind_space("episodic_event", limit=limit)
+
+    def list_summaries(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """列出所有摘要（episodic_summary 空间）。"""
+        return self._list_units_in_kind_space("episodic_summary", limit=limit)
+
     # ---------------- 高阶记忆构建 ----------------
     def build_high_level(self, mode: str = "auto") -> Dict[str, Any]:
         """触发高阶记忆构建（实体/事件抽取、摘要）。"""
@@ -415,6 +483,7 @@ class MandolService:
         t0 = time.time()
         report = system.build_high_level(mode=mode)
         elapsed = time.time() - t0
+        self._invalidate_dashboard_caches()
         result = {
             "status": getattr(report, "status", "completed"),
             "mode": mode,
@@ -715,6 +784,7 @@ class MandolService:
         """创建记忆空间。"""
         system = self._require()
         sp = system.semantic_map.create_space(name)
+        self._invalidate_dashboard_caches()
         return {
             "name": str(sp.name),
             "unit_count": 0,
@@ -725,6 +795,7 @@ class MandolService:
         """删除记忆空间。"""
         system = self._require()
         system.semantic_map.delete_space(name, cascade=cascade)
+        self._invalidate_dashboard_caches()
         return {"name": name, "deleted": True, "cascade": cascade}
 
     def attach_child_space(self, parent: str, child: str) -> Dict[str, Any]:
@@ -738,7 +809,7 @@ class MandolService:
         from mandol import SpaceName
         system = self._require()
         units = system.semantic_map.get_units_in_spaces([space_name])
-        return [_unit_to_dict(u) for u in units[:limit]]
+        return [_unit_to_dict(u, space_name=str(space_name)) for u in units[:limit]]
 
     def add_unit_to_space(self, uid: str, space_name: str) -> Dict[str, Any]:
         """将单元添加到空间。"""
@@ -941,11 +1012,27 @@ class MandolService:
         ]
 
     # ---------------- 统计与监控 ----------------
-    def get_stats(self) -> Dict[str, Any]:
-        """获取 Mandol 记忆系统统计。"""
+    def get_stats(self, force: bool = False) -> Dict[str, Any]:
+        """获取 Mandol 记忆系统统计（带 5s 进程内缓存，避免仪表盘反复全量扫描）。"""
         if not self._ensure_initialized():
             return {"enabled": False}
+        now = time.time()
+        if (
+            not force
+            and self._stats_cache is not None
+            and (now - self._stats_cache_ts) < self._STATS_CACHE_TTL
+        ):
+            return self._stats_cache
+        result = self._compute_stats()
+        self._stats_cache = result
+        self._stats_cache_ts = now
+        return result
+
+    def _compute_stats(self) -> Dict[str, Any]:
+        """实际执行统计计算（不读缓存）。"""
         system = self._system
+        if system is None:
+            return {"enabled": False}
         try:
             sm = system.semantic_map
             all_units = sm.list_units()
@@ -1036,6 +1123,8 @@ class MandolService:
                 warn(f"异步保存失败: {exc}")
             finally:
                 self._save_in_progress.clear()
+                # 写盘后清缓存，外部存储的 size_bytes 才会更新
+                self._invalidate_dashboard_caches()
 
         if wait:
             _do_save()
@@ -1067,19 +1156,35 @@ class MandolService:
                 MandolService._milvus_client = MilvusClient(uri=settings.mandol_milvus_uri)
         return MandolService._milvus_client
 
-    def external_store_status(self) -> Dict[str, Any]:
-        """查询 Neo4j + Milvus 实际状态（节点/边/集合统计）。"""
+    def external_store_status(self, force: bool = False, timeout: float = 3.0) -> Dict[str, Any]:
+        """查询 Neo4j + Milvus 实际状态（带 10s 进程内缓存）。
+
+        仪表盘每次刷新都会调用此接口；为避免反复连接 Neo4j/Milvus，
+        加 TTL 缓存。``force=True`` 可绕过缓存。
+        Neo4j/Milvus 任一探测超过 ``timeout`` 秒也会快速失败并返回错误信息，
+        避免仪表盘长时间转圈。
+        """
+        now = time.time()
+        if (
+            not force
+            and self._external_cache is not None
+            and (now - self._external_cache_ts) < self._EXTERNAL_CACHE_TTL
+        ):
+            return self._external_cache
+
         status: Dict[str, Any] = {
             "neo4j": {"available": False, "nodes": 0, "edges": 0, "rel_types": []},
             "milvus": {"available": False, "uri": settings.mandol_milvus_uri, "collection": settings.mandol_milvus_collection, "unit_count": 0},
             "snapshot": {"path": str(Path(self._storage_root or settings.mandol_storage_dir) / "snapshot.json"), "exists": False, "size_bytes": 0},
         }
-        # Neo4j
+        # Neo4j（带超时：网络异常时不再阻塞仪表盘）
         try:
             from neo4j import GraphDatabase
             d = GraphDatabase.driver(
                 settings.mandol_neo4j_uri,
                 auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+                connection_timeout=timeout,
+                max_connection_lifetime=timeout * 2,
             )
             with d.session(database=settings.mandol_neo4j_database) as s:
                 status["neo4j"]["nodes"] = s.run("MATCH (n) RETURN count(n) as c").single()["c"]
@@ -1093,15 +1198,22 @@ class MandolService:
         try:
             client = self._get_milvus_client()
             if client.has_collection(settings.mandol_milvus_collection):
-                status["milvus"]["unit_count"] = client.get_collection_stats(settings.mandol_milvus_collection).get("row_count", 0)
+                stats = client.get_collection_stats(settings.mandol_milvus_collection)
+                status["milvus"]["unit_count"] = stats.get("row_count", 0)
                 status["milvus"]["available"] = True
         except Exception as exc:
             status["milvus"]["error"] = str(exc)
         # Snapshot
-        snap = Path(status["snapshot"]["path"])
-        if snap.exists():
-            status["snapshot"]["exists"] = True
-            status["snapshot"]["size_bytes"] = snap.stat().st_size
+        try:
+            snap = Path(status["snapshot"]["path"])
+            if snap.exists():
+                status["snapshot"]["exists"] = True
+                status["snapshot"]["size_bytes"] = snap.stat().st_size
+        except Exception as exc:
+            status["snapshot"]["error"] = str(exc)
+
+        self._external_cache = status
+        self._external_cache_ts = now
         return status
 
     def load(self, storage_path: str) -> Dict[str, Any]:

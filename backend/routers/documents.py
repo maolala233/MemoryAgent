@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Any, Optional
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
@@ -213,6 +213,32 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                 mandol_service.save()
             except Exception as exc:
                 warn(f"自动 save snapshot 失败: {exc}")
+
+    # 5) 兜底 LLM 实体抽取（当 build_high_level 没产出时主动触发）
+    extraction_info: Optional[Dict[str, Any]] = None
+    if req.build_mandol and mandol_synced > 0:
+        try:
+            from ..services.entity_extractor import entity_extractor
+            extraction_info = entity_extractor.extract_and_store(
+                text=info.get("text", ""),
+                source_doc=info.get("filename", ""),
+                project_id=req.project_id,
+            )
+            # 如果兜底抽取出了内容，再补一次 build + save
+            if extraction_info and extraction_info.get("status") == "ok":
+                from ..services.mandol_service import mandol_service
+                if mandol_service.is_enabled:
+                    try:
+                        mandol_service.build_high_level(mode="auto")
+                    except Exception as exc:
+                        warn(f"兜底抽取后 build_high_level 失败: {exc}")
+                    try:
+                        mandol_service.save()
+                    except Exception as exc:
+                        warn(f"兜底抽取后 save 失败: {exc}")
+        except Exception as exc:
+            warn(f"LLM 实体抽取失败: {exc}")
+
     db.audit("import", file_id, f"saved={len(saved_paths)}, mandol_synced={mandol_synced}")
     return SaveResponse(
         saved_count=len(saved_paths),
@@ -221,6 +247,7 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
         original_path=original_path,
         summary_path=summary_path,
         summary_text=summary_text,
+        extraction=extraction_info,
     )
 
 

@@ -58,7 +58,7 @@ export default function SettingsPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [activeTab, setActiveTab] = useState<
-    "llm" | "model_profiles" | "embedder" | "reranker" | "system"
+    "llm" | "model_profiles" | "embedder" | "reranker" | "system" | "local_models"
   >("model_profiles");
 
   useEffect(() => {
@@ -176,6 +176,7 @@ export default function SettingsPage() {
             {[
               { key: "model_profiles" as const, label: "问答模型（多源）", icon: "hub" },
               { key: "llm" as const, label: "Mandol LLM", icon: "smart_toy" },
+              { key: "local_models" as const, label: "本地模型", icon: "folder_zip" },
               { key: "embedder" as const, label: "Embedding 嵌入模型", icon: "data_object" },
               { key: "reranker" as const, label: "Reranker 重排序模型", icon: "sort" },
               { key: "system" as const, label: "系统参数", icon: "tune" },
@@ -199,6 +200,11 @@ export default function SettingsPage() {
           {/* 问答模型（多源）配置 */}
           {activeTab === "model_profiles" && (
             <LLMProfileManager />
+          )}
+
+          {/* 本地模型管理（离线/已下载） */}
+          {activeTab === "local_models" && (
+            <LocalModelManager />
           )}
 
           {/* LLM 配置 */}
@@ -376,6 +382,7 @@ function NumberField({ label, value, onChange, step }: {
 // =============== LLM Profile 管理 ===============
 
 import type { LLMProfile } from "@/types";
+import { LocalModelManager } from "@/components/settings/LocalModelManager";
 
 interface LLMProfileForm {
   id?: string;

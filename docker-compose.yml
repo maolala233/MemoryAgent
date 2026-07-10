@@ -14,9 +14,17 @@ services:
       - DEFAULT_LLM_PROVIDER=mock
       - EMBEDDING_PROVIDER=mock
       - CORS_ORIGINS=["http://localhost:3000"]
+      - MANDOL_MILVUS_REMOTE_ENABLED=true
+      - MANDOL_MILVUS_URI=http://milvus:19530
+      - APP_MILVUS_REMOTE_ENABLED=true
+      - APP_MILVUS_URI=http://milvus:19530
+      - HF_HOME=/app/data/hf_cache
+      - HF_ENDPOINT=https://hf-mirror.com
     volumes:
       - ./data:/app/data
       - ./backend/config:/app/backend/config:ro
+    depends_on:
+      - milvus
     restart: unless-stopped
 
   frontend:
@@ -29,4 +37,24 @@ services:
       - NEXT_PUBLIC_BACKEND_WS=ws://localhost:8000
     depends_on:
       - backend
+    restart: unless-stopped
+
+  milvus:
+    image: milvusdb/milvus:v2.4.10
+    container_name: milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+    volumes:
+      - ./data/milvus:/var/lib/milvus
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped

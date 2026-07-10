@@ -206,6 +206,7 @@ export interface MandolUnitInfo {
   raw_data: Record<string, unknown>;
   metadata: Record<string, unknown>;
   text: string;
+  space_name?: string;
 }
 
 export interface MandolUnitListResponse {

@@ -129,19 +129,21 @@ export default function DashboardPage() {
       setIsLoading(true);
       setError(null);
       try {
-        const [s, units, ext] = await Promise.all([
-          api.get<MandolStatsResponse>("mandol/stats"),
-          api
-            .get<{ total: number; items: MandolUnitInfo[] }>("mandol/units?limit=8")
-            .catch(() => ({ total: 0, items: [] })),
-          api.get<ExternalStoreStatus>("mandol/external-store-status").catch(() => null),
-        ]);
-        setStats(s);
-        setRecentUnits(units.items || []);
-        setExternal(ext);
+        // 仪表盘首屏：只拉快接口 /stats/quick（带 5s 进程内缓存，~10ms 内返回）
+        const s = await api.get<MandolStatsResponse>("mandol/stats/quick");
+        setStats(s as unknown as MandolStatsResponse);
+        setIsLoading(false);
+        // 详情数据放后台拉，不阻塞首屏
+        api
+          .get<{ total: number; items: MandolUnitInfo[] }>("mandol/units?limit=8")
+          .then((units) => setRecentUnits(units.items || []))
+          .catch(() => {});
+        api
+          .get<ExternalStoreStatus>("mandol/external-store-status")
+          .then((ext) => setExternal(ext))
+          .catch(() => {});
       } catch (err) {
         setError(err instanceof ApiError ? err.detail : "加载失败");
-      } finally {
         setIsLoading(false);
       }
     })();

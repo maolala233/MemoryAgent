@@ -86,10 +86,31 @@ def list_relationship_types() -> List[str]:
 # 统计与监控
 # =====================================================================
 @router.get("/stats", response_model=MandolStatsResponse)
-def stats() -> MandolStatsResponse:
-    """获取 Mandol 记忆系统统计。"""
-    data = mandol_service.get_stats()
+def stats(force: bool = Query(False, description="是否绕过缓存")) -> MandolStatsResponse:
+    """获取 Mandol 记忆系统统计（带 5s 进程内缓存）。"""
+    data = mandol_service.get_stats(force=force)
     return MandolStatsResponse(**data)
+
+
+@router.get("/stats/quick")
+def stats_quick() -> dict:
+    """轻量统计：仅返回各类计数（仪表盘首屏使用，避免 token_usage 等慢字段）。
+
+    走与 /stats 相同的 5s 缓存；只取出 dashboard 卡片需要的字段。
+    """
+    data = mandol_service.get_stats()
+    if not data or not data.get("enabled"):
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "total_units": data.get("total_units", 0),
+        "total_spaces": data.get("total_spaces", 0),
+        "base_memory_count": data.get("base_memory_count", 0),
+        "entity_count": data.get("entity_count", 0),
+        "event_count": data.get("event_count", 0),
+        "summary_count": data.get("summary_count", 0),
+        "dirty": data.get("dirty", False),
+    }
 
 
 @router.get("/monitor", response_model=MandolMonitorResponse)
@@ -106,9 +127,28 @@ def monitor() -> MandolMonitorResponse:
 def list_units(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
+    q: Optional[str] = Query(None, description="关键词模糊搜索（text / uid / space_name）"),
 ) -> MandolUnitListResponse:
-    """列出记忆单元。"""
+    """列出记忆单元；支持关键词模糊搜索（小白友好入口）。
+
+    当传入 `q` 时，先按关键词全量召回（覆盖数据全集），再按 limit/offset 截断。
+    避免因分页/默认 limit 把关键词所在单元排除在外。
+    """
     _require_enabled()
+    kw = (q or "").strip().lower()
+    if kw:
+        # 关键词检索：拉全量后过滤（数据规模有限，全量扫描可接受）
+        all_items = _safe_call(mandol_service.list_units, limit=10000, offset=0)
+        matched = [
+            i for i in all_items
+            if kw in (i.get("text") or "").lower()
+            or kw in (i.get("uid") or "").lower()
+            or kw in (i.get("space_name") or "").lower()
+        ]
+        # 支持分页
+        total = len(matched)
+        items = matched[offset: offset + limit]
+        return MandolUnitListResponse(total=total, items=[MandolUnitInfo(**i) for i in items])
     items = _safe_call(mandol_service.list_units, limit=limit, offset=offset)
     return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
 
@@ -176,6 +216,30 @@ def list_units_in_space(name: str, limit: int = Query(100, ge=1, le=1000)) -> Ma
     """
     _require_enabled()
     items = _safe_call(mandol_service.list_units_in_space, name, limit=limit)
+    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
+
+
+@router.get("/entities", response_model=MandolUnitListResponse)
+def list_entities(limit: int = Query(500, ge=1, le=2000)) -> MandolUnitListResponse:
+    """列出所有实体（knowledge_entity 空间）。"""
+    _require_enabled()
+    items = _safe_call(mandol_service.list_entities, limit=limit)
+    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
+
+
+@router.get("/events", response_model=MandolUnitListResponse)
+def list_events(limit: int = Query(500, ge=1, le=2000)) -> MandolUnitListResponse:
+    """列出所有事件（episodic_event 空间）。"""
+    _require_enabled()
+    items = _safe_call(mandol_service.list_events, limit=limit)
+    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
+
+
+@router.get("/summaries", response_model=MandolUnitListResponse)
+def list_summaries(limit: int = Query(500, ge=1, le=2000)) -> MandolUnitListResponse:
+    """列出所有摘要（episodic_summary 空间）。"""
+    _require_enabled()
+    items = _safe_call(mandol_service.list_summaries, limit=limit)
     return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
 
 
@@ -444,16 +508,55 @@ def save_snapshot_status() -> dict:
 
 
 @router.get("/external-store-status")
-def external_store_status() -> dict:
-    """查询 Neo4j + Milvus + snapshot 实际状态。"""
+def external_store_status(force: bool = Query(False, description="是否绕过缓存")) -> dict:
+    """查询 Neo4j + Milvus + snapshot 实际状态（带 10s 进程内缓存）。"""
     _require_enabled()
-    return mandol_service.external_store_status()
+    return mandol_service.external_store_status(force=force)
+
+
+@router.get("/neo4j/entities/search")
+def search_entities(
+    q: str = Query(..., min_length=1, max_length=200, description="关键词（实体名/文本片段）"),
+    limit: int = Query(15, ge=1, le=50),
+    label: Optional[str] = Query(None, description="限定节点标签，如 Entity / Document / Event"),
+) -> dict:
+    """Neo4j 节点模糊搜索（用于前端图谱小白检索）。
+
+    在 ``name`` / ``title`` / ``text`` 等常见文本字段上做大小写不敏感的子串匹配，
+    返回 uid / label / 显示名 / 简短摘要，供前端下拉建议使用。
+    """
+    _require_enabled()
+    from ..config.settings import settings as _s
+    from neo4j import GraphDatabase as _GD
+    d = _GD.driver(_s.mandol_neo4j_uri, auth=(_s.mandol_neo4j_user, _s.mandol_neo4j_password))
+    try:
+        with d.session(database=_s.mandol_neo4j_database) as sess:
+            cypher = (
+                "MATCH (n) "
+                "WHERE ($label IS NULL OR $label IN labels(n)) "
+                "  AND (toLower(coalesce(n.name, '')) CONTAINS toLower($q) "
+                "    OR toLower(coalesce(n.title, '')) CONTAINS toLower($q) "
+                "    OR toLower(coalesce(n.text, '')) CONTAINS toLower($q) "
+                "    OR toLower(coalesce(n.uid, '')) CONTAINS toLower($q)) "
+                "RETURN n.uid AS uid, labels(n) AS labels, "
+                "       coalesce(n.name, n.title) AS display, "
+                "       substring(coalesce(n.text, ''), 0, 120) AS snippet, "
+                "       n._label AS mandol_type "
+                "LIMIT $lim"
+            )
+            rows = [dict(r) for r in sess.run(cypher, q=q, label=label, lim=limit)]
+            return {"items": rows, "count": len(rows), "q": q}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"实体搜索失败: {exc}")
+    finally:
+        d.close()
 
 
 @router.get("/neo4j/subgraph")
 def neo4j_subgraph(
     center_uid: Optional[str] = Query(None, description="中心节点 UID"),
     limit: int = Query(200, ge=1, le=2000),
+    keyword: Optional[str] = Query(None, description="关键词（节点 name/title/text 模糊匹配）"),
 ) -> dict:
     """从 Neo4j 读取全图或子图（用于图谱可视化）。"""
     _require_enabled()
@@ -464,17 +567,47 @@ def neo4j_subgraph(
         with d.session(database=_s.mandol_neo4j_database) as sess:
             if center_uid:
                 q_nodes = (
-                    "MATCH (a {uid:$c})-[r*1..2]-(b) "
+                    "MATCH (a {uid:$c})-[*1..2]-(b) "
                     "WITH collect(distinct a) + collect(distinct b) AS ns "
                     "UNWIND ns AS n RETURN DISTINCT n.uid AS uid, labels(n) AS labels, properties(n) AS props LIMIT $lim"
                 )
+                # 取出两跳内的节点，再匹配这些节点两两之间的边（更稳定）
                 q_edges = (
-                    "MATCH (a {uid:$c})-[r*1..2]-(b) "
-                    "WITH collect(distinct relationships(r)) AS rs "
-                    "UNWIND rs AS rel RETURN DISTINCT id(rel) AS id, type(rel) AS type, properties(rel) AS props LIMIT $lim"
+                    "MATCH (a {uid:$c})-[*1..2]-(b) "
+                    "WITH collect(distinct a) + collect(distinct b) AS ns "
+                    "UNWIND ns AS n MATCH (n)-[r]-(m) WHERE m IN ns "
+                    "RETURN DISTINCT id(r) AS id, n.uid AS s, m.uid AS t, "
+                    "       type(r) AS type, properties(r) AS props LIMIT $lim"
                 )
                 nodes = [dict(r) for r in sess.run(q_nodes, c=center_uid, lim=limit)]
                 edges = [dict(r) for r in sess.run(q_edges, c=center_uid, lim=limit)]
+            elif keyword:
+                # 关键词模糊匹配 — 在 name/title/text/uid 上做大小写不敏感子串匹配
+                q_nodes = (
+                    "MATCH (n) WHERE toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(n.title,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(n.text,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(n.uid,'')) CONTAINS toLower($kw) "
+                    "RETURN n.uid AS uid, labels(n) AS labels, properties(n) AS props LIMIT $lim"
+                )
+                q_edges = (
+                    "MATCH (a)-[r]->(b) WHERE toLower(coalesce(a.name,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(b.name,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(a.uid,'')) CONTAINS toLower($kw) "
+                    "  OR toLower(coalesce(b.uid,'')) CONTAINS toLower($kw) "
+                    "RETURN id(r) AS id, a.uid AS s, b.uid AS t, type(r) AS type, properties(r) AS props LIMIT $lim"
+                )
+                nodes = [dict(r) for r in sess.run(q_nodes, kw=keyword, lim=limit)]
+                edges = [dict(r) for r in sess.run(q_edges, kw=keyword, lim=limit)]
+                # 若只有 uid 匹配，补一次：拿到匹配节点直接相连的边
+                if nodes and not edges:
+                    uids = [n.get("uid") for n in nodes if n.get("uid")]
+                    if uids:
+                        q_edges2 = (
+                            "MATCH (a)-[r]->(b) WHERE a.uid IN $uids OR b.uid IN $uids "
+                            "RETURN id(r) AS id, a.uid AS s, b.uid AS t, type(r) AS type, properties(r) AS props LIMIT $lim"
+                        )
+                        edges = [dict(r) for r in sess.run(q_edges2, uids=uids, lim=limit)]
             else:
                 nodes = [
                     dict(r) for r in sess.run(
@@ -489,7 +622,7 @@ def neo4j_subgraph(
                         lim=limit,
                     )
                 ]
-            return {"nodes": nodes, "edges": edges, "center": center_uid}
+            return {"nodes": nodes, "edges": edges, "center": center_uid or keyword}
     finally:
         d.close()
 

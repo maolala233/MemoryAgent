@@ -245,6 +245,7 @@ class SaveResponse(BaseModel):
     original_path: Optional[str] = None
     summary_path: Optional[str] = None
     summary_text: Optional[str] = None
+    extraction: Optional[Dict[str, Any]] = None
 
 
 class UploadResponse(BaseModel):
@@ -276,6 +277,7 @@ class MandolUnitInfo(BaseModel):
     raw_data: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
     text: str = ""
+    space_name: Optional[str] = None
 
 
 class MandolUnitCreateRequest(BaseModel):

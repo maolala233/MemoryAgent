@@ -113,6 +113,46 @@ export function useMandol() {
     }
   }, []);
 
+  // ============ 实体 / 事件 / 摘要 ============
+  const listEntities = useCallback(async (limit = 500) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await api.get<MandolUnitListResponse>(`mandol/entities?limit=${limit}`);
+      return data;
+    } catch (err) {
+      return handleErr(err, "获取实体列表失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const listEvents = useCallback(async (limit = 500) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await api.get<MandolUnitListResponse>(`mandol/events?limit=${limit}`);
+      return data;
+    } catch (err) {
+      return handleErr(err, "获取事件列表失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  const listSummaries = useCallback(async (limit = 500) => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const data = await api.get<MandolUnitListResponse>(`mandol/summaries?limit=${limit}`);
+      return data;
+    } catch (err) {
+      return handleErr(err, "获取摘要列表失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
   // ============ 空间管理 ============
   const listSpaces = useCallback(async () => {
     setIsLoading(true);
@@ -412,14 +452,18 @@ export function useMandol() {
     }
   }, []);
 
-  const getNeo4jSubgraph = useCallback(async (centerUid?: string, limit = 200) => {
+  const getNeo4jSubgraph = useCallback(async (
+    centerUid?: string,
+    limit = 200,
+    keyword?: string,
+  ) => {
     setIsLoading(true);
     setError(null);
     try {
-      const url = centerUid
-        ? `mandol/neo4j/subgraph?center_uid=${encodeURIComponent(centerUid)}&limit=${limit}`
-        : `mandol/neo4j/subgraph?limit=${limit}`;
-      const data = await api.get<Neo4jSubgraph>(url);
+      const params = new URLSearchParams({ limit: String(limit) });
+      if (centerUid) params.set("center_uid", centerUid);
+      if (keyword) params.set("keyword", keyword);
+      const data = await api.get<Neo4jSubgraph>(`mandol/neo4j/subgraph?${params.toString()}`);
       setNeo4jSubgraph(data);
       return data;
     } catch (err) {
@@ -457,6 +501,14 @@ export function useMandol() {
     }
   }, []);
 
+  // ============ 实体/事件详情（系统层）============
+  const getEntityDetail = useCallback(async (uid: string) => {
+    return await api.get<{
+      unit: MandolUnitInfo;
+      edges: { source: string; target: string; relation: string }[];
+    }>(`system/entity/${encodeURIComponent(uid)}`);
+  }, []);
+
   return {
     stats,
     units,
@@ -478,6 +530,10 @@ export function useMandol() {
     getUnit,
     createUnit,
     deleteUnit,
+    // 实体 / 事件 / 摘要
+    listEntities,
+    listEvents,
+    listSummaries,
     // 空间
     listSpaces,
     createSpace,
@@ -505,5 +561,6 @@ export function useMandol() {
     getExternalStatus,
     flush,
     reconfigure,
+    getEntityDetail,
   };
 }
