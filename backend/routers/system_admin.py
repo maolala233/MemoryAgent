@@ -160,20 +160,52 @@ def get_entity_detail(uid: str) -> Dict[str, Any]:
         unit = mandol_service.get_unit(uid)
         if not unit:
             raise HTTPException(status_code=404, detail=f"实体不存在: {uid}")
-        # 尝试通过 Neo4j 拿到关联
+        # 获取关联边和源文档片段
         edges: List[Dict[str, Any]] = []
+        source_chunks: List[Dict[str, Any]] = []
+        seen_chunk_uids: set = set()
         try:
             system = mandol_service._require()
-            neighbors = system.graph.get_neighbors(uid, max_hops=1)
-            for n in neighbors or []:
-                edges.append({
-                    "source": n.source.uid,
-                    "target": n.target.uid,
-                    "relation": getattr(n, "relation_type", None) or getattr(n, "type", ""),
-                })
+            from mandol import Uid
+            uid_obj = Uid(uid)
+            uid_str = str(uid_obj)
+            # system.graph 是 SemanticGraphService，没有 get_all_edges；
+            # 真正的图存储是 system._graph_store（Neo4j 或 InMemory）。
+            graph_store = getattr(system, "_graph_store", None) or getattr(system, "graph", None)
+            all_edges = graph_store.get_all_edges() if graph_store else []
+            for s, t, rt, _ in all_edges:
+                s_str, t_str = str(s), str(t)
+                if s_str == uid_str or t_str == uid_str:
+                    edges.append({
+                        "source": s_str,
+                        "target": t_str,
+                        "relation": rt or "RELATED",
+                    })
+                    # 另一端若是文档/会话/文档块，收集其原文（去重）
+                    neighbor_uid = t_str if s_str == uid_str else s_str
+                    if (
+                        neighbor_uid.startswith("doc:")
+                        or neighbor_uid.startswith("sess_")
+                        or ":chunk:" in neighbor_uid
+                    ) and neighbor_uid not in seen_chunk_uids:
+                        n_unit = system.semantic_map.get_unit(Uid(neighbor_uid))
+                        if n_unit:
+                            text_content = n_unit.raw_data.get("text_content", "")
+                            if not text_content:
+                                text_content = (
+                                    n_unit.raw_data.get("summary", "")
+                                    or n_unit.raw_data.get("content", "")
+                                    or n_unit.raw_data.get("text", "")
+                                )
+                            source_chunks.append({
+                                "uid": str(n_unit.uid),
+                                "text": text_content,
+                                "relation": rt or "RELATED",
+                            })
+                            seen_chunk_uids.add(neighbor_uid)
         except Exception:
             pass
-        return {"unit": unit, "edges": edges}
+        return {"unit": unit, "edges": edges, "source_chunks": source_chunks}
     except HTTPException:
         raise
     except Exception as exc:

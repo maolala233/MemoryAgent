@@ -148,6 +148,11 @@ def _retrieve(query: str, *, strategy: str, top_k: int, use_rerank: bool,
               space_name: str = "") -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """根据 strategy 选择不同检索路径。
 
+    综合三种检索来源：
+    1. 向量检索（holistic/text_only）：基于 embedding 的语义相似度
+    2. 图谱检索：从实体子图 + BFS 扩展获取关联文档
+    3. RRF 融合：将两路结果去重融合后排序
+
     Returns:
         (hits, trace_steps) - 命中的单元字典列表 + 检索过程 trace 步骤
     """
@@ -162,11 +167,80 @@ def _retrieve(query: str, *, strategy: str, top_k: int, use_rerank: bool,
             hits = mandol_service.holistic_retrieve(
                 query, top_k=top_k, use_rerank=use_rerank
             )
+            # 图谱扩展：holistic rerank 通常把实体排到后面被截断，
+            # 所以不依赖 hits 中的实体，而是主动执行实体子图检索获取种子
+            try:
+                subgraph = mandol_service.get_entity_subgraph(query, top_k=5)  # noqa: max_depth defaults to 2
+                sg_nodes = subgraph.get("nodes", [])
+                sg_edges = subgraph.get("edges", [])
+                entity_seeds = [
+                    str(n.get("uid", n.get("id", "")))
+                    for n in sg_nodes
+                    if str(n.get("uid", n.get("id", ""))).startswith("entity:")
+                ][:3]
+                trace.append({
+                    "step": "graph_subgraph",
+                    "value": f"实体子图检索：{len(sg_nodes)} 节点, {len(sg_edges)} 边, 提取种子 {len(entity_seeds)} 个",
+                })
+                if entity_seeds:
+                    trace.append({
+                        "step": "graph_expand",
+                        "value": f"图谱 BFS 扩展：种子={entity_seeds}",
+                    })
+                    expanded = mandol_service.bfs_expand(
+                        entity_seeds, per_seed=3, hops=2
+                    )
+                    existing_uids = {h.get("uid", "") for h in hits}
+                    graph_hits = []
+                    for ex in expanded:
+                        ex_uid = str(ex.get("uid", ""))
+                        if ex_uid and ex_uid not in existing_uids:
+                            ex_dict = {
+                                "uid": ex_uid,
+                                "text": (ex.get("raw_data", {}).get("text_content", "") or ex.get("text", ""))[:600],
+                                "score": float(ex.get("score", 0.3)),
+                                "metadata": ex.get("metadata", {}),
+                                "raw_data": ex.get("raw_data", {}),
+                                "scores": {"graph_bfs": 0.3},
+                                "ranks": {"graph_bfs": len(graph_hits) + 1},
+                            }
+                            graph_hits.append(ex_dict)
+                            existing_uids.add(ex_uid)
+                    if graph_hits:
+                        trace.append({
+                            "step": "graph_expand",
+                            "value": f"图谱扩展新增 {len(graph_hits)} 条关联记忆",
+                        })
+                        hits.extend(graph_hits[:top_k])
+                    else:
+                        trace.append({
+                            "step": "graph_expand",
+                            "value": "图谱扩展无新增（所有关联节点已在向量结果中）",
+                        })
+            except Exception as exc:
+                trace.append({"step": "graph_expand", "value": f"图谱扩展失败: {exc}"})
         elif s == "text_only" or s == "vector_only":
             trace.append({"step": "strategy", "value": "text_only（仅向量检索）"})
             hits = mandol_service.search_by_text(query, top_k=top_k)
         elif s == "graph_only":
             trace.append({"step": "strategy", "value": "graph_only（图谱遍历）"})
+            # 先通过实体子图查找相关实体
+            try:
+                subgraph = mandol_service.get_entity_subgraph(query, top_k=top_k)
+                trace.append({"step": "graph_subgraph", "value": f"实体子图：{len(subgraph.get('nodes', []))} 节点, {len(subgraph.get('edges', []))} 边"})
+                for node in subgraph.get("nodes", []):
+                    uid = node.get("uid", node.get("id", ""))
+                    if uid and not str(uid).startswith("entity:"):
+                        hits.append({
+                            "uid": uid,
+                            "text": (node.get("text") or node.get("raw_data", {}).get("text_content", ""))[:600],
+                            "score": float(node.get("score", 0.5)),
+                            "metadata": node.get("metadata", {}),
+                            "raw_data": node.get("raw_data", {}),
+                        })
+            except Exception as exc:
+                trace.append({"step": "graph_subgraph", "value": f"实体子图查询失败: {exc}"})
+            # 再用 BFS 扩展
             raw = mandol_service.search_graph_relations(
                 seed_nodes=[query], max_depth=2, limit=top_k
             )
@@ -252,7 +326,7 @@ class StreamRequest(BaseModel):
 
 
 def _format_context(hits: List[Dict[str, Any]], budget: int = 2400) -> str:
-    """将命中拼成 LLM 上下文。"""
+    """将命中拼成 LLM 上下文，标注检索来源。"""
     parts: List[str] = []
     used = 0
     for i, h in enumerate(hits, 1):
@@ -260,7 +334,17 @@ def _format_context(hits: List[Dict[str, Any]], budget: int = 2400) -> str:
         if not text:
             continue
         snippet = text[:600]
-        piece = f"[{i}] {snippet}"
+        # 标注检索来源
+        scores = h.get("scores") or {}
+        ranks = h.get("ranks") or {}
+        source_tag = ""
+        if "graph_bfs" in scores or "graph_bfs" in ranks:
+            source_tag = " [图谱扩展]"
+        elif "rerank" in scores or "rerank" in ranks:
+            source_tag = " [向量+Rerank]"
+        elif "dense" in ranks:
+            source_tag = " [向量检索]"
+        piece = f"[{i}]{source_tag} {snippet}"
         cost = estimate_tokens(piece)
         if used + cost > budget:
             break
@@ -280,6 +364,8 @@ def _build_history_messages(
     """构造 LLM 消息：system(含记忆) + 历史（裁剪到预算） + user。"""
     sys_prompt = (
         "你是一个基于记忆的智能助手。请结合下方「记忆」回答用户问题。"
+        "记忆来源包括 [向量检索]、[向量+Rerank] 和 [图谱扩展] 三种，"
+        "请综合参考所有来源的信息给出准确回答。"
         "如果记忆中没有相关信息，请明确说明并基于通用知识回答。"
         "回答末尾列出引用的记忆编号（形如 [1][2]）。\n"
         "【输出格式要求】\n"
@@ -348,8 +434,10 @@ async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
         req.message, strategy=strategy, top_k=top_k, use_rerank=use_rerank,
         space_name=space_name,
     )
-    # 检索阶段返回的 trace 合并进来
-    trace.extend(retrieve_trace)
+    # 检索阶段返回的 trace 合并进来 + 同步推送给前端 SSE
+    for t_step in retrieve_trace:
+        trace.append(t_step)
+        yield _sse("trace", t_step)
     t_hc = {"step": "hits_count", "value": f"命中 {len(hits)} 条"}
     trace.append(t_hc)
     yield _sse("trace", t_hc)

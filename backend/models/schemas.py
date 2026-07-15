@@ -236,6 +236,7 @@ class ConvertResponse(BaseModel):
 class SaveRequest(BaseModel):
     memory_files: List[MemoryFilePreview]
     build_mandol: bool = True  # 是否同步构建 Mandol 记忆
+    project_id: Optional[str] = None  # 项目 ID（与 convert 一致，便于整链路关联）
 
 
 class SaveResponse(BaseModel):
@@ -465,6 +466,7 @@ class MandolAskResponse(BaseModel):
 # =====================================================================
 class BuildRequest(BaseModel):
     mode: str = "auto"  # auto|force
+    skip_summary: bool = True  # 跳过 summary 生成，直接用原文切片
 
 
 class BuildReportResponse(BaseModel):

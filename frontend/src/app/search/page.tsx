@@ -283,8 +283,15 @@ function SearchContent() {
         bestIdx = i;
       }
     }
-    // 阈值 = 第 bestIdx 条的分数（不含）
-    let threshold = items[bestIdx].norm;
+    // 阈值 = 第 bestIdx 条的分数（不含）；bestIdx 可能仍为 n（无 gap），
+    // 此时退化为 maxKeep 处的分数，保证不越界
+    let threshold: number;
+    if (bestIdx >= n) {
+      const fallbackIdx = Math.min(Math.max(maxKeep, minKeep), n) - 1;
+      threshold = fallbackIdx >= 0 ? items[fallbackIdx].norm : items[0].norm;
+    } else {
+      threshold = items[bestIdx].norm;
+    }
     // 保底：保证至少 3 条
     if (bestIdx < minKeep) {
       threshold = items[Math.min(minKeep, n) - 1].norm;

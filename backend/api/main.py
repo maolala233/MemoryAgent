@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         else:
             info("Mandol 初始化标记失败，继续启动")
 
-    memory_service.ensure_seed_data()
+    # memory_service.ensure_seed_data()  # 临时禁用种子数据，用于干净测试
     # 启动时重新索引已有的 vault 文件到 SQLite
     if settings.vault_dir.exists() and any(settings.vault_dir.rglob("*.md")):
         try:

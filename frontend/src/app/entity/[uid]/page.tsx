@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState, use } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/shared/Icon";
 import { useMandol } from "@/hooks/useMandol";
 
@@ -19,12 +19,12 @@ interface Edge {
 interface DetailResponse {
   unit: MemoryUnit;
   edges: Edge[];
+  source_chunks?: { uid: string; text: string; relation: string }[];
 }
 
-export default function EntityDetailPage({ params }: { params: Promise<{ uid: string }> }) {
-  const { uid } = use(params);
-  const decodedUid = decodeURIComponent(uid);
-  const mandol = useMandol();
+export default function EntityDetailPage({ params }: { params: { uid: string } }) {
+  const decodedUid = decodeURIComponent(params.uid);
+  const { getEntityDetail } = useMandol();
   const [data, setData] = useState<DetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +35,7 @@ export default function EntityDetailPage({ params }: { params: Promise<{ uid: st
     setError(null);
     (async () => {
       try {
-        const res = await mandol.getEntityDetail(decodedUid);
+        const res = await getEntityDetail(decodedUid);
         if (!cancelled) setData(res);
       } catch (err: unknown) {
         const detail =
@@ -51,7 +51,8 @@ export default function EntityDetailPage({ params }: { params: Promise<{ uid: st
     return () => {
       cancelled = true;
     };
-  }, [decodedUid, mandol]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decodedUid]);
 
   const unit = data?.unit;
   const rd = (unit?.raw_data || {}) as Record<string, unknown>;
@@ -104,9 +105,31 @@ export default function EntityDetailPage({ params }: { params: Promise<{ uid: st
                 </p>
               </div>
             )}
-            {unit?.text && (
+            {data.source_chunks && data.source_chunks.length > 0 && (
               <div className="mt-3">
-                <h3 className="text-body-sm font-semibold text-on-surface-variant mb-1">原文</h3>
+                <h3 className="text-body-sm font-semibold text-on-surface-variant mb-1">
+                  来源原文片段（{data.source_chunks.length}）
+                </h3>
+                <div className="space-y-2">
+                  {data.source_chunks.map((chunk, i) => (
+                    <div key={i} className="text-body-sm bg-surface-variant/40 rounded-lg p-3 border border-border">
+                      <div className="flex items-center gap-2 text-label-sm text-on-surface-variant mb-2">
+                        <span className="font-mono truncate flex-1">{chunk.uid}</span>
+                        <span className="shrink-0 px-1.5 py-0.5 rounded bg-primary-container text-on-primary-container">
+                          {chunk.relation}
+                        </span>
+                      </div>
+                      <pre className="whitespace-pre-wrap max-h-80 overflow-y-auto leading-relaxed">
+                        {chunk.text}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {unit?.text && (data.source_chunks?.length ?? 0) === 0 && (
+              <div className="mt-3">
+                <h3 className="text-body-sm font-semibold text-on-surface-variant mb-1">实体文本</h3>
                 <pre className="text-body-sm bg-surface-variant/40 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap">
                   {unit.text}
                 </pre>

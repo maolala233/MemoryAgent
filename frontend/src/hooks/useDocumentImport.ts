@@ -80,25 +80,34 @@ export function useDocumentImport() {
     [],
   );
 
-  const save = useCallback(async (fileId: string, memoryFiles: ConvertResponse["memory_files"], buildMandol = true) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const data = await api.post<SaveResponse>(`documents/${fileId}/save`, {
-        memory_files: memoryFiles,
-        build_mandol: buildMandol,
-      });
-      setSaved(data);
-      setProgress(100);
-      setStep("save");
-      return data;
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "保存失败");
-      return null;
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+  const save = useCallback(
+    async (
+      fileId: string,
+      memoryFiles: ConvertResponse["memory_files"],
+      buildMandol = true,
+      projectId?: string,
+    ) => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const data = await api.post<SaveResponse>(`documents/${fileId}/save`, {
+          memory_files: memoryFiles,
+          build_mandol: buildMandol,
+          project_id: projectId || undefined,
+        });
+        setSaved(data);
+        setProgress(100);
+        setStep("save");
+        return data;
+      } catch (err) {
+        setError(err instanceof ApiError ? err.detail : "保存失败");
+        return null;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   const reset = useCallback(() => {
     setStep("upload");

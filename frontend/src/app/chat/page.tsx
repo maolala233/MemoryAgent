@@ -31,13 +31,14 @@ function TracePanel({
   // 按 step 类别分组
   const profileLines = trace.filter((t) => t.step === "profile" || t.step === "query" || t.step === "start");
   const strategyLines = trace.filter((t) => t.step === "strategy" || t.step === "space_filter");
+  const graphLines = trace.filter((t) => t.step === "graph_subgraph" || t.step === "graph_expand");
   const hitLines = trace.filter((t) => t.step === "hit");
   const ctxLines = trace.filter((t) => t.step === "context" || t.step === "hits_count");
   const genLines = trace.filter((t) => t.step === "generating");
   const saveLines = trace.filter((t) => t.step === "saved" || t.step === "save_error");
   const doneLines = trace.filter((t) => t.step === "done");
   const otherLines = trace.filter(
-    (t) => !["profile", "query", "start", "strategy", "space_filter", "hit", "context", "hits_count", "generating", "saved", "save_error", "done", "error"].includes(t.step),
+    (t) => !["profile", "query", "start", "strategy", "space_filter", "graph_subgraph", "graph_expand", "hit", "context", "hits_count", "generating", "saved", "save_error", "done", "error"].includes(t.step),
   );
 
   return (
@@ -64,37 +65,64 @@ function TracePanel({
           </Section>
         )}
 
+        {/* 1.5 图谱检索（图谱子图 + BFS 扩展） */}
+        {graphLines.length > 0 && (
+          <Section icon="hub" title={`图谱检索（${graphLines.length} 步）`}>
+            <ol className="space-y-1 pl-4 list-decimal text-on-surface-variant">
+              {graphLines.map((t, i) => (
+                <li key={i}>
+                  <span className="text-primary font-medium">[{t.step}]</span> {t.value}
+                </li>
+              ))}
+            </ol>
+          </Section>
+        )}
+
         {/* 2. 命中详情（每条 hit 的 snippet+score） */}
         {hitLines.length > 0 && (
           <Section icon="target" title={`检索命中（${hitLines.length} 条）`}>
             <ol className="space-y-1.5 pl-4 list-decimal text-on-surface-variant">
-              {hitLines.map((h, i) => (
-                <li key={i}>
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-primary font-medium">{h.title || h.uid || `hit-${i + 1}`}</span>
-                    {typeof h.score === "number" && (
-                      <span className="px-1.5 py-0.5 bg-primary-fixed text-primary rounded text-label-sm">
-                        score={h.score.toFixed(3)}
+              {hitLines.map((h, i) => {
+                // 通过 uid 前缀/分数判断来源
+                const isGraph = h.title?.includes("graph_bfs") || h.snippet?.includes("graph_bfs");
+                const isRerank = h.score !== undefined && h.score > 0.5;
+                const srcTag = isGraph ? "图谱扩展" : isRerank ? "向量+Rerank" : "向量检索";
+                const srcColor = isGraph
+                  ? "bg-tertiary-fixed text-tertiary"
+                  : isRerank
+                    ? "bg-primary-fixed text-primary"
+                    : "bg-secondary-fixed text-secondary";
+                return (
+                  <li key={i}>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className={`px-1.5 py-0.5 rounded text-label-sm ${srcColor}`}>
+                        {srcTag}
                       </span>
+                      <span className="text-primary font-medium">{h.title || h.uid || `hit-${i + 1}`}</span>
+                      {typeof h.score === "number" && (
+                        <span className="px-1.5 py-0.5 bg-primary-fixed text-primary rounded text-label-sm">
+                          score={h.score.toFixed(3)}
+                        </span>
+                      )}
+                      {h.uid && (
+                        <a
+                          href={`/units?uid=${encodeURIComponent(h.uid)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-label-sm text-primary hover:underline inline-flex items-center gap-0.5"
+                        >
+                          <Icon name="open_in_new" className="text-[12px]" /> 打开
+                        </a>
+                      )}
+                    </div>
+                    {h.snippet && (
+                      <p className="mt-0.5 pl-1 text-on-surface-variant/80 line-clamp-2">
+                        {h.snippet}
+                      </p>
                     )}
-                    {h.uid && (
-                      <a
-                        href={`/units?uid=${encodeURIComponent(h.uid)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-label-sm text-primary hover:underline inline-flex items-center gap-0.5"
-                      >
-                        <Icon name="open_in_new" className="text-[12px]" /> 打开
-                      </a>
-                    )}
-                  </div>
-                  {h.snippet && (
-                    <p className="mt-0.5 pl-1 text-on-surface-variant/80 line-clamp-2">
-                      {h.snippet}
-                    </p>
-                  )}
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ol>
           </Section>
         )}

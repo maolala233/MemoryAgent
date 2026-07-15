@@ -148,7 +148,12 @@ export default function ImportPage() {
 
   const onSave = () => {
     if (!converted || !upload) return;
-    save(upload.file_id, converted.memory_files, convertOpts.build_mandol);
+    save(
+      upload.file_id,
+      converted.memory_files,
+      convertOpts.build_mandol,
+      convertOpts.project_id || undefined,
+    );
   };
 
   return (

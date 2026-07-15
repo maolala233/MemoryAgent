@@ -27,7 +27,7 @@ class LLMConfig(BaseModel):
     base_url: str = ""
     api_key: str = ""
     temperature: float = 0.3
-    max_tokens: int = 1024
+    max_tokens: int = 32768
 
 
 class EmbedderConfig(BaseModel):
@@ -128,7 +128,7 @@ def get_config():
                 "base_url": settings.mandol_llm_base_url,
                 "api_key": "***" if settings.mandol_llm_api_key else "",
                 "temperature": 0.3,
-                "max_tokens": 1024,
+                "max_tokens": 32768,
             },
             "embedder": {
                 "model": settings.mandol_embedder_model,
@@ -196,7 +196,7 @@ def update_config(req: SettingsConfigRequest):
     try:
         import json as _json
         from logging import getLogger as _getLogger
-        _getLogger("codex_memory").info(f"收到配置请求: {_json.dumps(req.model_dump(), default=str)[:500]}")
+        _getLogger("memory_agent").info(f"收到配置请求: {_json.dumps(req.model_dump(), default=str)[:500]}")
         m = req.mandol
         # 基础配置
         settings.mandol_enabled = m.enabled
@@ -292,7 +292,7 @@ def update_config(req: SettingsConfigRequest):
             })
         except Exception as exc:
             from logging import getLogger as _getLogger
-            _getLogger("codex_memory").warning(f"保存外部存储配置失败: {exc}")
+            _getLogger("memory_agent").warning(f"保存外部存储配置失败: {exc}")
 
         # 持久化本地模型（embedder / reranker）选择，启动时默认加载
         try:
@@ -308,7 +308,7 @@ def update_config(req: SettingsConfigRequest):
             })
         except Exception as exc:
             from logging import getLogger as _getLogger
-            _getLogger("codex_memory").warning(f"保存模型存储配置失败: {exc}")
+            _getLogger("memory_agent").warning(f"保存模型存储配置失败: {exc}")
 
         # 更新启用状态
         if m.enabled and not mandol_service.is_enabled:

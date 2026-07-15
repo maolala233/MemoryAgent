@@ -89,9 +89,16 @@ class MandolService:
         self._stats_cache_ts: float = 0.0
         self._external_cache: Optional[Dict[str, Any]] = None
         self._external_cache_ts: float = 0.0
+        self._spaces_cache: Optional[List[Dict[str, Any]]] = None
+        self._spaces_cache_ts: float = 0.0
 
     # 进程内单例：MilvusUnitStore 持有 milvus.db 的 fcntl 锁，重复创建会冲突
     _unit_store: Optional[Any] = None
+
+    # 空间列表缓存 TTL（秒）：list_spaces 需要遍历所有空间并 prune/统计，
+    # 即便优化后仍要打多次 Milvus/Neo4j。短 TTL 即可显著降低重复点击
+    # /api/mandol/spaces 造成的开销，同时保证数据不会太陈旧。
+    _SPACES_CACHE_TTL: float = 5.0
 
     # 缓存 TTL（秒）：仪表盘刷新频繁时仍能保证 5s 内一致
     _STATS_CACHE_TTL: float = 5.0
@@ -169,8 +176,24 @@ class MandolService:
         snapshot_file = Path(storage_root) / "snapshot.json"
         if snapshot_file.exists():
             try:
-                self._system = MemorySystem.load(str(snapshot_file), llm_provider=llm_provider)
+                self._system = MemorySystem.load(
+                    str(snapshot_file),
+                    llm_provider=llm_provider,
+                    graph_store=graph_store,
+                    unit_store=unit_store,
+                )
                 info(f"已从快照加载 Mandol MemorySystem: {snapshot_file}")
+                # 加载完后,验证外部后端是否就位(防止被 fallback 到 InMemory 后又误传 Neo4j/Milvus)
+                if graph_store is not None:
+                    info(f"  图后端: {type(self._system._graph_store).__name__}")
+                if unit_store is not None:
+                    _us = getattr(self._system, "_unit_store", None)
+                    if _us is None:
+                        _us = getattr(getattr(self._system, "_semantic_map", None), "_store", None)
+                    if _us is not None:
+                        info(f"  单元后端: {type(_us).__name__}")
+                    else:
+                        info("  单元后端: (unknown)")
             except Exception as exc:
                 warn(f"加载快照失败，将新建系统: {exc}")
                 self._system = SystemFactory.create(
@@ -287,16 +310,25 @@ class MandolService:
         )
 
     def _build_llm_provider(self) -> Any:
-        """根据 settings 构建 LLM provider，显式传入 api_key 和 base_url。"""
+        """根据 settings 构建 LLM provider，显式传入 api_key 和 base_url。
+
+        LLM_TIMEOUT_S 环境变量可临时覆盖默认 300s 超时（用于长上下文/慢模型）。
+        """
         from mandol.infrastructure.openai_compatible_llm_provider import OpenAICompatibleLLMProvider
+        import os
 
         api_key = settings.mandol_llm_api_key or "ollama"
         base_url = settings.mandol_llm_base_url or "http://localhost:11434/v1"
+        # LLM_TIMEOUT_S 环境变量优先：默认 300s；用户可临时拉大到 600/900
+        try:
+            timeout_s = int(os.getenv("LLM_TIMEOUT_S", "300"))
+        except (TypeError, ValueError):
+            timeout_s = 300
         return OpenAICompatibleLLMProvider(
             model=settings.mandol_llm_model,
             api_key=api_key,
             base_url=base_url,
-            timeout_s=300,
+            timeout_s=timeout_s,
         )
 
     def reconfigure(self) -> bool:
@@ -365,6 +397,8 @@ class MandolService:
         else:
             system.add(unit)
         self._invalidate_dashboard_caches()
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
         return _unit_to_dict(unit)
 
     def add_many(
@@ -428,6 +462,8 @@ class MandolService:
             except Exception:
                 pass
             self._invalidate_dashboard_caches()
+            self._spaces_cache = None
+            self._spaces_cache_ts = 0.0
             return True
         except Exception as exc:
             warn(f"删除单元失败 {uid}: {exc}")
@@ -445,6 +481,93 @@ class MandolService:
         system = self._require()
         units = system.semantic_map.list_units()
         return [_unit_to_dict(u) for u in units[offset:offset + limit]]
+
+    def reembed_all_units(self, only_zero: bool = True, batch_size: int = 32) -> Dict[str, Any]:
+        """对存量单元重新计算 embedding 并写回。
+
+        适用场景：之前因为缺少 sentence-transformers 等导致
+        StaticEmbeddingProvider 退化为零向量，vector search 形同虚设。
+        本方法会：
+        1. 遍历所有 unit（按 batch 拉取，避免一次拉全表 OOM）；
+        2. 对 embedding 全为 0（或缺省）的 unit 用当前 embedder 重新编码；
+        3. 写回 unit store 并刷新 vector index。
+
+        Args:
+            only_zero: 仅处理当前 embedding 为零向量的 unit（增量修复）。
+            batch_size: 一次处理的批大小，sentence-transformers CPU 推理建议 8-32。
+        """
+        from mandol import Uid
+        import numpy as np
+
+        system = self._require()
+        # 优先使用 unit store 的批量接口（避免对每个 uid 都打一次网络）。
+        store = system.semantic_map._store  # noqa: SLF001
+        all_units = system.semantic_map.list_units()
+        if not all_units:
+            return {"scanned": 0, "reembedded": 0, "skipped": 0}
+
+        def _is_zero(vec) -> bool:
+            if vec is None:
+                return True
+            arr = np.asarray(vec, dtype=np.float32)
+            return float(arr.sum()) == 0.0
+
+        scanned = 0
+        reembedded = 0
+        skipped = 0
+        # 按 batch 处理：先收集要重算的 unit，再统一 encode
+        pending = []
+        for u in all_units:
+            scanned += 1
+            cur = getattr(u, "embedding", None)
+            if only_zero and not _is_zero(cur):
+                skipped += 1
+                continue
+            text = (u.raw_data or {}).get("text_content", "") or ""
+            if not text:
+                skipped += 1
+                continue
+            pending.append(u)
+
+        for i in range(0, len(pending), batch_size):
+            batch = pending[i : i + batch_size]
+            texts = [(u.raw_data or {}).get("text_content", "") for u in batch]
+            try:
+                # 优先使用 semantic_map 的 embedder（MemorySystem 上没有
+                # `embedder` 这个公共属性）。
+                embedder = getattr(system.semantic_map, "_embedder", None)  # noqa: SLF001
+                if embedder is None:
+                    raise RuntimeError("system.semantic_map._embedder is None")
+                new_vecs = embedder.embed_text(texts)
+            except Exception as exc:
+                warn(f"embed_text 失败 (batch {i // batch_size}): {exc}")
+                skipped += len(batch)
+                continue
+            for u, vec in zip(batch, new_vecs):
+                u.embedding = vec
+            try:
+                store.upsert_units(batch)
+            except Exception as exc:
+                warn(f"upsert_units 失败 (batch {i // batch_size}): {exc}")
+                continue
+            reembedded += len(batch)
+
+        # 重建 vector index（让新 embedding 立刻可被 ANN 检索到）
+        try:
+            vi = getattr(system, "_abi", None)  # noqa: SLF001
+            if vi is not None and hasattr(vi, "clear"):
+                vi.clear()
+            units_with_vec = [u for u in all_units if getattr(u, "embedding", None) is not None]
+            if vi is not None and hasattr(vi, "upsert"):
+                vi.upsert([(u.uid, u.embedding) for u in units_with_vec])
+        except Exception as exc:
+            warn(f"vector index 重建失败: {exc}")
+
+        # 失效相关缓存
+        self._invalidate_dashboard_caches()
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
+        return {"scanned": scanned, "reembedded": reembedded, "skipped": skipped}
 
     def _list_units_in_kind_space(self, kind: str, limit: int = 500) -> List[Dict[str, Any]]:
         """按类型(knowledge_entity / episodic_event / ...) 列出对应空间内的单元。"""
@@ -477,12 +600,33 @@ class MandolService:
         return self._list_units_in_kind_space("episodic_summary", limit=limit)
 
     # ---------------- 高阶记忆构建 ----------------
-    def build_high_level(self, mode: str = "auto") -> Dict[str, Any]:
-        """触发高阶记忆构建（实体/事件抽取、摘要）。"""
+    def build_high_level(
+        self, mode: str = "auto", skip_summary: bool = True
+    ) -> Dict[str, Any]:
+        """触发高阶记忆构建（实体/事件抽取、摘要）。
+
+        默认 skip_summary=True：跳过 summary 生成，直接使用原文切片
+        作为高阶记忆。实体/事件抽取仍照常进行。
+        """
         system = self._require()
         t0 = time.time()
-        report = system.build_high_level(mode=mode)
+        report = system.build_high_level(mode=mode, skip_summary=skip_summary)
         elapsed = time.time() - t0
+        # 高阶抽取完成后,立即 flush 图存储(Mandol 的 Neo4jGraphStore 会把关系
+        # 缓存在 _pending_upserts 里,只有 flush() 才会真正写入 Neo4j;否则下次
+        # 读图 / 持久化到 graph.json 时取不到这些关系)。
+        try:
+            system.flush()
+        except Exception as exc:  # noqa: BLE001
+            warn(f"Mandol 高级构建后 flush 失败(忽略): {exc}")
+        # Mandol 默认使用 InMemoryGraphStore(NetworkX),与外部 Neo4j 之间
+        # 没有自动同步,这里把内存图同步到 Neo4j,供前端 neo4j tab 可视化。
+        try:
+            sync_report = self.sync_graph_to_neo4j()
+            result_extra = sync_report
+        except Exception as exc:  # noqa: BLE001
+            warn(f"同步 Mandol 内存图到 Neo4j 失败(忽略): {exc}")
+            result_extra = {"status": "error", "error": str(exc)}
         self._invalidate_dashboard_caches()
         result = {
             "status": getattr(report, "status", "completed"),
@@ -493,6 +637,7 @@ class MandolService:
             "token_usage": self._safe_token_usage(report),
             "warnings": list(getattr(report, "warnings", []) or []),
             "error": getattr(report, "error_message", None),
+            "neo4j_sync": result_extra,
         }
         info(f"高阶记忆构建完成: {result['status']}, "
              f"会话={result['sessions_processed']}, 单元={result['units_processed']}, "
@@ -693,23 +838,32 @@ class MandolService:
             return 0
         store = system.semantic_map._store  # noqa: SLF001
         try:
-            alive = [u for u in sp.unit_uids if store.get_unit(u) is not None]
+            # 优先用批量接口，一次网络往返即可验证所有 uid；
+            # 否则退化为逐个 get_unit（仍可工作，只是慢很多）。
+            try:
+                alive = [u for u in store.get_units(list(sp.unit_uids)) if u is not None]
+            except AttributeError:
+                alive = [u for u in sp.unit_uids if store.get_unit(u) is not None]
+            # 注意：alive 只包含"被取到"的 unit；不在结果中的视为死引用。
+            alive_uids = {str(u.uid) for u in alive}
+            if len(alive_uids) == len(sp.unit_uids):
+                return 0
+            # 保持原顺序，仅保留仍存在的 uid
+            new_uids = [u for u in sp.unit_uids if str(u) in alive_uids]
+            dead = len(sp.unit_uids) - len(new_uids)
+            sp.unit_uids = new_uids
+            if hasattr(store, "upsert_spaces"):
+                try:
+                    store.upsert_spaces([sp])
+                except Exception:
+                    pass
+            if hasattr(store, "flush"):
+                try:
+                    store.flush()
+                except Exception:
+                    pass
         except Exception:
             return 0
-        if len(alive) == len(sp.unit_uids):
-            return 0
-        dead = len(sp.unit_uids) - len(alive)
-        sp.unit_uids = alive
-        if hasattr(store, "upsert_spaces"):
-            try:
-                store.upsert_spaces([sp])
-            except Exception:
-                pass
-        if hasattr(store, "flush"):
-            try:
-                store.flush()
-            except Exception:
-                pass
         # 触发完整持久化（写回原 snapshot.json 目录），下次启动也生效
         if hasattr(system, "save"):
             try:
@@ -733,6 +887,13 @@ class MandolService:
             prune_ghost: 是否在返回前自动清理空间中的死引用 unit_uids。
                 默认为 True，可让 unit_count 与 /units 接口实际返回数量一致。
         """
+        import time as _time
+        now = _time.monotonic()
+        if (
+            self._spaces_cache is not None
+            and (now - self._spaces_cache_ts) < self._SPACES_CACHE_TTL
+        ):
+            return list(self._spaces_cache)
         system = self._require()
         spaces = system.semantic_map.list_spaces()
         out = []
@@ -749,6 +910,8 @@ class MandolService:
                 "summary": sp.summary_text,
                 "metadata": sp.metadata,
             })
+        self._spaces_cache = list(out)
+        self._spaces_cache_ts = now
         return out
 
     def get_space(self, name: str, prune_ghost: bool = True) -> Optional[Dict[str, Any]]:
@@ -773,10 +936,14 @@ class MandolService:
         }
 
     def _count_units_recursive(self, system, sp) -> int:
-        """递归统计空间及其所有子空间下"实际存在"的单元数（去重）。"""
+        """递归统计空间及其所有子空间下"实际存在"的单元数（去重）。
+
+        注意：本方法假定 _prune_dead_uids 已被调用过（list_spaces 中
+        prune_ghost=True 的默认流程即是），因此直接统计
+        get_all_unit_uids() 的长度即可，无需再走一次 Milvus 网络 IO。
+        """
         try:
-            units = system.semantic_map.get_units_in_spaces([str(sp.name)])
-            return len(units)
+            return len(sp.get_all_unit_uids(recursive=True))
         except Exception:
             return len(sp.unit_uids or [])
 
@@ -785,6 +952,8 @@ class MandolService:
         system = self._require()
         sp = system.semantic_map.create_space(name)
         self._invalidate_dashboard_caches()
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
         return {
             "name": str(sp.name),
             "unit_count": 0,
@@ -796,6 +965,8 @@ class MandolService:
         system = self._require()
         system.semantic_map.delete_space(name, cascade=cascade)
         self._invalidate_dashboard_caches()
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
         return {"name": name, "deleted": True, "cascade": cascade}
 
     def attach_child_space(self, parent: str, child: str) -> Dict[str, Any]:
@@ -816,6 +987,8 @@ class MandolService:
         from mandol import Uid
         system = self._require()
         system.semantic_map.add_unit_to_space(Uid(uid), space_name)
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
         return {"uid": uid, "space_name": space_name}
 
     def remove_unit_from_space(self, uid: str, space_name: str) -> Dict[str, Any]:
@@ -872,6 +1045,8 @@ class MandolService:
                 system.save()
         except Exception:
             pass
+        self._spaces_cache = None
+        self._spaces_cache_ts = 0.0
         return {"uid": uid, "space_name": space_name}
 
     # ---------------- 图谱操作 ----------------
@@ -966,11 +1141,88 @@ class MandolService:
     def get_entity_subgraph(
         self, query: str, max_depth: int = 2, top_k: int = 10
     ) -> Dict[str, Any]:
-        """获取实体子图。"""
+        """获取实体子图。
+
+        当向量检索（embedder）不可用时，回退到文本关键词匹配。
+        """
         system = self._require()
         result = system.graph.retrieve_entity_subgraph(
             query, max_depth=max_depth, top_k=top_k
         )
+        # 检查结果是否有效（embedder 降级为 zero embeddings 时可能返回无关结果）
+        center = getattr(result, "center_entity", None)
+        needs_fallback = not center
+        if center:
+            # 验证返回的 center 是否真的与查询相关
+            q_lower = query.lower()
+            c_uid = str(center.uid).lower()
+            c_raw = str(center.raw_data.get("text_content", "")).lower()
+            if q_lower not in c_uid and q_lower not in c_raw:
+                needs_fallback = True
+        if needs_fallback:
+            # 回退：对所有 unit 做文本关键词匹配，再取图邻居
+            from mandol import Uid
+            from mandol.retrieval.types import EntitySubgraphResult, RelationshipInfo
+            from collections import deque
+
+            all_units = system.semantic_map.list_units()
+            q_lower = query.lower()
+            matched = []
+            for u in all_units:
+                uid_str = str(u.uid).lower()
+                raw_text = str(u.raw_data.get("text_content", "")).lower()
+                if q_lower in uid_str or q_lower in raw_text:
+                    matched.append(u)
+                if len(matched) >= top_k:
+                    break
+
+            if matched:
+                center = matched[0]
+                center_uid = Uid(str(center.uid))
+                neighbors = list(matched[1:])
+                relationships: list = []
+                seen = {center_uid}
+                for u in neighbors:
+                    seen.add(Uid(str(u.uid)))
+
+                # BFS 扩展邻居
+                queue = deque([(center_uid, 0)])
+                while queue and len(neighbors) < top_k:
+                    current, depth = queue.popleft()
+                    if depth >= max_depth:
+                        continue
+                    # 分别查 out 和 in 方向（Neo4j 不支持 "both"）
+                    hop_uids = list(system.graph._graph.get_neighbors(current, direction="out"))
+                    hop_uids += list(system.graph._graph.get_neighbors(current, direction="in"))
+                    for n_uid in hop_uids:
+                        if n_uid in seen:
+                            continue
+                        seen.add(n_uid)
+                        n_unit = system.semantic_map.get_unit(n_uid)
+                        if n_unit:
+                            neighbors.append(n_unit)
+                            queue.append((n_uid, depth + 1))
+                            if len(neighbors) >= top_k:
+                                break
+
+                # 收集边：遍历所有边，筛选涉及的 unit
+                matched_uids = {str(center_uid)} | {str(Uid(str(u.uid))) for u in neighbors}
+                for s_uid, t_uid, etype, props in system.graph._graph.get_all_edges():
+                    s_str, t_str = str(s_uid), str(t_uid)
+                    if s_str in matched_uids or t_str in matched_uids:
+                        relationships.append(RelationshipInfo(
+                            source_uid=s_uid,
+                            target_uid=t_uid,
+                            rel_type=etype,
+                            properties=props or {},
+                        ))
+
+                result = EntitySubgraphResult(
+                    center_entity=center,
+                    neighbors=neighbors,
+                    relationships=relationships,
+                    depth_map={str(center_uid): 0},
+                )
         return self._subgraph_result_to_dict(result)
 
     def trace_evidence(self, uid: str, max_depth: int = 2, top_k: int = 10) -> Dict[str, Any]:
@@ -1234,6 +1486,249 @@ class MandolService:
             pass
         return {"status": "flushed"}
 
+    def sync_graph_to_neo4j(self) -> Dict[str, Any]:
+        """把 Mandol 内存图(NetworkX)同步到外部 Neo4j,供前端 neo4j tab 可视化。
+
+        Mandol 默认使用 InMemoryGraphStore(NetworkX),与外部 Neo4j 之间
+        没有自动同步机制;前端 neo4j tab 直接查 Neo4j,所以会一直显示 0 节点。
+        该方法读取 memory_system._graph_store 的全部节点/边,写入 Neo4j
+        (使用 MERGE 去重,不会产生重复)。
+        """
+        system = self._require()
+        from ..config.settings import settings
+        from neo4j import GraphDatabase
+
+        graph_store = getattr(system, "_graph_store", None)
+        if graph_store is None:
+            return {"status": "no-graph", "nodes": 0, "edges": 0}
+
+        # 1) 读取内存图所有节点/边
+        # 兼容两种图存储:InMemoryGraphStore(NetworkX, _g) 与 Neo4jGraphStore(无 _g)
+        nodes = []
+        edges = []
+        try:
+            g = getattr(graph_store, "_g", None)
+            if g is not None:
+                nodes = list(g.nodes(data=True))
+                edges = list(g.edges(data=True))
+            else:
+                # Neo4jGraphStore: 通过 get_all_edges 拿边,节点从边端点聚合
+                all_edges = graph_store.get_all_edges()
+                seen = {}
+                for source, target, rel_type, props in all_edges:
+                    seen[str(source)] = (str(source), props or {})
+                    seen[str(target)] = (str(target), {})
+                    edges.append((str(source), str(target), {"type": rel_type, **(props or {})}))
+                nodes = list(seen.values())
+        except Exception as exc:  # noqa: BLE001
+            warn(f"读取内存图失败: {exc}")
+            return {"status": "error", "error": str(exc), "nodes": 0, "edges": 0}
+
+        # 1.5) 把 semantic_map 里所有 unit 也补进 nodes(仅 entity/event/summary/chunk 之类)
+        # 这样即便它们没出现在图的边上(例如还没生成语义关系),也能在 Neo4j 里看见
+        try:
+            sem_map = getattr(system, "_semantic_map", None)
+            if sem_map is not None and hasattr(sem_map, "list_units"):
+                existing_uids = {str(uid) for uid, _ in nodes}
+                for u in sem_map.list_units():
+                    uid_str = str(getattr(u, "uid", "") or "")
+                    if not uid_str or uid_str in existing_uids:
+                        continue
+                    raw = getattr(u, "raw_data", {}) or {}
+                    # 只把 entity / event / summary / chunk 这四类有展示价值的拉进来
+                    if not (
+                        uid_str.startswith("entity:")
+                        or uid_str.startswith("event:")
+                        or uid_str.startswith("doc:")
+                        or (uid_str.startswith("sess_") and "summary" in uid_str)
+                    ):
+                        continue
+                    # 把一些基础展示字段先压进 attrs,后面 enrich 会再覆盖一次
+                    display = {}
+                    name = raw.get("entity_name") or raw.get("event_name") or raw.get("title") or raw.get("name")
+                    if name:
+                        display["name"] = str(name)
+                    for k in ("entity_type", "event_subtype", "subtype", "type"):
+                        if raw.get(k):
+                            display["type"] = str(raw.get(k))
+                            break
+                    if raw.get("description") or raw.get("desc"):
+                        display["description"] = str(raw.get("description") or raw.get("desc"))
+                    nodes.append((uid_str, display))
+                    existing_uids.add(uid_str)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"补全 semantic_map 节点失败: {exc}")
+
+        # 2) 写入 Neo4j
+        driver = GraphDatabase.driver(
+            settings.mandol_neo4j_uri,
+            auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+        )
+        node_count = 0
+        edge_count = 0
+        try:
+            with driver.session(database=settings.mandol_neo4j_database) as sess:
+                # 节点:仅以 uid 作主键,顺手把 name/title/text 等常见展示字段带上
+                for uid, attrs in nodes:
+                    uid_str = str(uid)
+                    # 过滤掉不可序列化的属性(例如 _g 这种内部对象)
+                    props = {"uid": uid_str}
+                    for k, v in (attrs or {}).items():
+                        if k.startswith("_") or v is None:
+                            continue
+                        try:
+                            import json as _json
+                            _json.dumps(v)
+                            props[k] = v
+                        except (TypeError, ValueError):
+                            props[k] = str(v)
+                    sess.run(
+                        "MERGE (n {uid:$uid}) SET n += $props",
+                        uid=uid_str,
+                        props=props,
+                    )
+                    node_count += 1
+
+                # 边:用 uid 定位端点,按 rel_type 区分
+                for source, target, data in edges:
+                    s = str(source)
+                    t = str(target)
+                    rel = str(data.get("type", "RELATED_TO")) if isinstance(data, dict) else "RELATED_TO"
+                    edge_props = {}
+                    if isinstance(data, dict):
+                        for k, v in data.items():
+                            if k in ("type",) or v is None or k.startswith("_"):
+                                continue
+                            try:
+                                import json as _json
+                                _json.dumps(v)
+                                edge_props[k] = v
+                            except (TypeError, ValueError):
+                                edge_props[k] = str(v)
+                    sess.run(
+                        f"MERGE (a {{uid:$s}}) MERGE (b {{uid:$t}}) "
+                        f"MERGE (a)-[r:{rel}]->(b) SET r += $props",
+                        s=s, t=t, props=edge_props,
+                    )
+                    edge_count += 1
+        finally:
+            driver.close()
+
+        # 4) 回填:从 semantic_map 把 entity/event/summary 的可读属性写进 Neo4j 节点
+        # 仅当 graph_store 是 Neo4jGraphStore 时才执行,避免对内存图做无谓的二次写入
+        from ..config.settings import settings as _settings
+        try:
+            from neo4j import GraphDatabase as _Gdb
+            _drv = _Gdb.driver(
+                _settings.mandol_neo4j_uri,
+                auth=(_settings.mandol_neo4j_user, _settings.mandol_neo4j_password),
+            )
+        except Exception:
+            _drv = None
+        if _drv is not None:
+            try:
+                self._enrich_neo4j_nodes(_drv)
+            finally:
+                _drv.close()
+
+        info(f"已同步 Mandol 内存图到 Neo4j: nodes={node_count}, edges={edge_count}")
+        return {"status": "synced", "nodes": node_count, "edges": edge_count}
+
+    # ------------------------------------------------------------------
+    # 用 semantic_map 里的 unit 数据,补全 Neo4j 节点的展示属性 + labels
+    # ------------------------------------------------------------------
+    def _enrich_neo4j_nodes(self, driver) -> None:
+        """根据 unit 类型,把 entity_name / event_name / 摘要 / chunk 文本等
+        字段写到 Neo4j 节点的属性里,并打上 Neo4j labels,让前端 Browser
+        不再看到一堆 "uid-only" 的空节点。"""
+        from ..config.settings import settings as _settings
+
+        system = self._require()
+        sem_map = getattr(system, "_semantic_map", None)
+        if sem_map is None or not hasattr(sem_map, "list_units"):
+            return
+
+        try:
+            units = sem_map.list_units()
+        except Exception as exc:  # noqa: BLE001
+            warn(f"读取 semantic_map 失败: {exc}")
+            return
+
+        # 单元显示名/类型从 raw_data 里取 (Mandol 在生成 unit 时会把
+        # entity_name / entity_type / event_name / text_content 等塞进 raw_data)
+        enriched = 0
+        with driver.session(database=_settings.mandol_neo4j_database) as sess:
+            for u in units:
+                uid_str = str(getattr(u, "uid", "") or "")
+                if not uid_str:
+                    continue
+                raw = getattr(u, "raw_data", {}) or {}
+                meta = getattr(u, "metadata", {}) or {}
+                text_content = (
+                    raw.get("text_content")
+                    or raw.get("description")
+                    or raw.get("summary")
+                    or ""
+                )
+                # 兼容 Mandol 把全部内容塞 text_content 的情况
+                if not text_content and isinstance(raw, dict):
+                    # 兜底:把 dict 拍平成一行字符串
+                    try:
+                        import json as _json
+                        text_content = _json.dumps(raw, ensure_ascii=False)[:400]
+                    except Exception:
+                        text_content = str(raw)[:400]
+
+                # 类别/标签推断
+                labels: list = []
+                props: dict = {"uid": uid_str}
+                preview = (text_content or "").strip()
+                if preview:
+                    props["preview"] = preview[:300]
+
+                if uid_str.startswith("entity:"):
+                    name = raw.get("entity_name") or raw.get("name") or ""
+                    etype = raw.get("entity_type") or raw.get("type") or ""
+                    desc = raw.get("description") or raw.get("desc") or ""
+                    props["name"] = name
+                    props["type"] = etype
+                    props["description"] = desc
+                    labels.append("Entity")
+                    if etype:
+                        labels.append(str(etype).strip())
+                elif uid_str.startswith("event:"):
+                    name = raw.get("event_name") or raw.get("name") or ""
+                    subtype = raw.get("subtype") or raw.get("event_subtype") or ""
+                    desc = raw.get("description") or raw.get("desc") or ""
+                    props["name"] = name
+                    props["subtype"] = subtype
+                    props["description"] = desc
+                    labels.append("Event")
+                    if subtype:
+                        labels.append(str(subtype).strip())
+                elif uid_str.startswith("doc:"):
+                    labels.append("Chunk")
+                elif uid_str.startswith("sess_") and "summary" in uid_str:
+                    labels.append("Summary")
+                else:
+                    # 会话/其他单元
+                    labels.append("Unit")
+
+                # Neo4j label 名要合法(字母数字下划线),把中文/特殊字符替成 _
+                import re as _re
+                safe_labels = [
+                    _re.sub(r"[^A-Za-z0-9_]", "_", lbl) for lbl in labels
+                ]
+                # label 必须写在 ( 之后: MERGE (n:L1:L2 {uid:$uid}) ...
+                label_clause = (
+                    ":" + ":".join(safe_labels) if safe_labels else ""
+                )
+                q = f"MERGE (n{label_clause} {{uid:$uid}}) SET n += $props"
+                sess.run(q, uid=uid_str, props=props)
+                enriched += 1
+
+        info(f"Neo4j 节点回填完成: enriched={enriched}")
+
     # ---------------- 辅助 ----------------
     def _safe_token_usage(self, report) -> Dict[str, int]:
         try:
@@ -1248,22 +1743,69 @@ class MandolService:
             return {}
 
     def _subgraph_result_to_dict(self, result) -> Dict[str, Any]:
-        """转换实体子图结果。"""
-        out = {"nodes": [], "edges": [], "entities": [], "events": []}
-        for attr in ["nodes", "edges", "entities", "events"]:
-            val = getattr(result, attr, None)
-            if val is None:
-                continue
-            if isinstance(val, list):
-                out[attr] = [
-                    _unit_to_dict(x) if hasattr(x, "uid") else (
-                        dict(x) if hasattr(x, "__dict__") else str(x)
-                    )
-                    for x in val
-                ]
-            else:
-                out[attr] = str(val)
-        return out
+        """转换实体子图结果。
+
+        EntitySubgraphResult 的字段为 center_entity / neighbors / relationships / depth_map，
+        需要映射到前端期望的 nodes / edges / entities / events。
+        """
+        nodes: list = []
+        edges: list = []
+
+        # 兼容旧格式（直接有 nodes/edges 属性）
+        legacy_nodes = getattr(result, "nodes", None)
+        legacy_edges = getattr(result, "edges", None)
+
+        if legacy_nodes is not None and isinstance(legacy_nodes, list):
+            nodes = legacy_nodes
+        else:
+            # EntitySubgraphResult: center_entity + neighbors
+            center = getattr(result, "center_entity", None)
+            if center is not None:
+                nodes.append(center)
+            neighbors = getattr(result, "neighbors", None)
+            if neighbors and isinstance(neighbors, list):
+                for n in neighbors:
+                    if n not in nodes:
+                        nodes.append(n)
+
+        if legacy_edges is not None and isinstance(legacy_edges, list):
+            edges = legacy_edges
+        else:
+            # EntitySubgraphResult: relationships -> edges
+            rels = getattr(result, "relationships", None)
+            if rels and isinstance(rels, list):
+                for r in rels:
+                    if hasattr(r, "source_uid"):
+                        edges.append({
+                            "source": str(r.source_uid),
+                            "target": str(r.target_uid),
+                            "relationship": r.rel_type,
+                        })
+                    elif hasattr(r, "source"):
+                        edges.append({
+                            "source": str(getattr(r, "source", "")),
+                            "target": str(getattr(r, "target", "")),
+                            "relationship": getattr(r, "relation_type", getattr(r, "type", "RELATED")),
+                        })
+
+        # entities / events 分类
+        entities = []
+        events = []
+        for n in nodes:
+            uid_str = str(getattr(n, "uid", ""))
+            if uid_str.startswith("entity:"):
+                entities.append(_unit_to_dict(n) if hasattr(n, "uid") else str(n))
+            elif uid_str.startswith("event:"):
+                events.append(_unit_to_dict(n) if hasattr(n, "uid") else str(n))
+
+        node_dicts = [
+            _unit_to_dict(x) if hasattr(x, "uid") else (
+                dict(x) if hasattr(x, "__dict__") else str(x)
+            )
+            for x in nodes
+        ]
+
+        return {"nodes": node_dicts, "edges": edges, "entities": entities, "events": events}
 
     def _evidence_result_to_dict(self, result) -> Dict[str, Any]:
         out = {"chain": [], "summary": None}

@@ -6,7 +6,7 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Optional
 
-LOG = logging.getLogger("codex_memory")
+LOG = logging.getLogger("memory_agent")
 
 
 def setup_logging(level: str = "INFO") -> None:

@@ -143,8 +143,8 @@ class Settings(BaseSettings):
     mandol_session_check_interval: int = 20
     mandol_session_max_pending: int = 100
     mandol_similarity_top_k: int = 5
-    mandol_similarity_threshold: float = 0.7
-    mandol_similarity_recent_window: int = 20
+    mandol_similarity_threshold: float = 0.82
+    mandol_similarity_recent_window: int = 10
     mandol_bfs_expansion_per_seed: int = 3
     mandol_bfs_expansion_hops: int = 1
     mandol_max_context_units: int = 20

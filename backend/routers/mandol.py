@@ -326,6 +326,23 @@ def delete_relationship(req: RelationshipDeleteRequest) -> StatusResponse:
     return StatusResponse(status="deleted")
 
 
+@router.post("/graph/sync-neo4j", response_model=StatusResponse)
+def sync_graph_to_neo4j() -> StatusResponse:
+    """把 Mandol 内存图(NetworkX)同步到外部 Neo4j,供前端 neo4j tab 显示。
+
+    Mandol 默认使用 InMemoryGraphStore(NetworkX),与外部 Neo4j 之间
+    没有自动同步机制;前端 neo4j tab 直接查 Neo4j,所以会一直显示 0 节点。
+    该接口读取 memory_system._graph_store 的全部节点/边,写入 Neo4j
+    (使用 MERGE 去重,不会产生重复)。
+    """
+    _require_enabled()
+    result = _safe_call(mandol_service.sync_graph_to_neo4j)
+    return StatusResponse(
+        status=result.get("status", "unknown"),
+        message=f"nodes={result.get('nodes', 0)}, edges={result.get('edges', 0)}",
+    )
+
+
 # =====================================================================
 # 图谱遍历
 # =====================================================================
@@ -465,9 +482,15 @@ def ask(req: MandolAskRequest) -> MandolAskResponse:
 # =====================================================================
 @router.post("/build", response_model=BuildReportResponse)
 def build_high_level(req: BuildRequest) -> BuildReportResponse:
-    """触发高阶记忆构建（实体/事件抽取、摘要）。"""
+    """触发高阶记忆构建（实体/事件抽取、摘要）。
+
+    req.skip_summary 默认 True：跳过 summary 生成，直接用原文切片。
+    """
     _require_enabled()
-    data = _safe_call(mandol_service.build_high_level, mode=req.mode)
+    data = _safe_call(
+        mandol_service.build_high_level,
+        mode=req.mode, skip_summary=req.skip_summary,
+    )
     if data.get("error"):
         raise HTTPException(status_code=500, detail=data["error"])
     return BuildReportResponse(**data)
@@ -641,6 +664,17 @@ def flush() -> StatusResponse:
     _require_enabled()
     _safe_call(mandol_service.flush)
     return StatusResponse(status="flushed")
+
+
+@router.post("/reembed-all")
+def reembed_all(only_zero: bool = True, batch_size: int = 32) -> dict:
+    """重新计算所有单元的 embedding（修复零向量场景）。
+
+    - only_zero=True: 只处理当前 embedding 全为 0 的 unit（增量修复）。
+    - only_zero=False: 强制重算所有 unit。
+    """
+    _require_enabled()
+    return _safe_call(mandol_service.reembed_all_units, only_zero=only_zero, batch_size=batch_size)
 
 
 @router.post("/reconfigure", response_model=StatusResponse)

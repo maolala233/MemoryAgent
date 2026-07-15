@@ -20,7 +20,7 @@ class LLMProfilePayload(BaseModel):
     model: str = ""
     api_key: str = ""
     temperature: float = 0.3
-    max_tokens: int = 1024
+    max_tokens: int = 32768
     timeout_s: int = 60
     enabled: bool = True
     is_default: bool = False

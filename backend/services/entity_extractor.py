@@ -204,7 +204,7 @@ class EntityExtractor:
         # 写入 Mandol
         stored = 0
         try:
-            from mandol import MemoryUnit, Uid
+            from Mandol.src.mandol import MemoryUnit, Uid
             system = mandol_service._require()
             base_tag = uuid.uuid4().hex[:8]
 

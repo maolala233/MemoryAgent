@@ -117,7 +117,7 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
 
     saved_paths: list[str] = []
     mandol_synced = 0
-    # 1) 自动写一份原始 markdown 入库
+    # 1) 自动写一份原始 markdown 入库（无 LLM，直接落盘）
     original_path: str | None = None
     try:
         title_base = info["metadata"].get("title") or info.get("filename", "imported_document")
@@ -140,36 +140,10 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                     mandol_synced += 1
     except Exception as exc:
         warn(f"自动生成原始 markdown 失败: {exc}")
-    # 2) LLM 摘要
+    # 2) LLM 摘要 — 默认跳过(每 chunk 一次 LLM 调用,文档稍大就跑几小时)
+    # 摘要与实体/事件抽取交给 /api/mandol/build 统一做,效率更高
     summary_path: str | None = None
     summary_text: str | None = None
-    if req.build_mandol:
-        try:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            try:
-                summary = loop.run_until_complete(
-                    summary_generator.generate_for_document(
-                        title=info["metadata"].get("title") or info.get("filename", "imported_document"),
-                        raw_text=info.get("text", ""),
-                        source_doc=info.get("filename", ""),
-                        project_id=req.project_id,
-                    )
-                )
-            finally:
-                loop.close()
-            if summary:
-                summary_path = summary["rel_path"]
-                summary_text = summary.get("summary")
-                saved_paths.append(summary_path)
-                from ..services.mandol_service import mandol_service
-                if mandol_service.is_enabled and mandol_service.sync_document(
-                    summary_path, summary["content"],
-                    metadata={"memory_type": "imported_summary", "track": "summary"},
-                ):
-                    mandol_synced += 1
-        except Exception as exc:
-            warn(f"LLM 摘要生成失败: {exc}")
     # 3) 保存 chunked 记忆文件
     for f in files:
         try:
