@@ -368,6 +368,16 @@ class MandolService:
     def system(self):
         return self._system
 
+    def warmup(self) -> bool:
+        """启动期预热：强制完成底层 MemorySystem 初始化（同步加载模型/快照）。
+
+        目的：避免 /api/chat/stream 首请求时阻塞事件循环（导致 SSE 5s+ 延迟，
+        Next.js 代理超时返回 500）。
+        """
+        if not self._enabled:
+            return False
+        return self._ensure_initialized()
+
     def _require(self):
         """要求系统已初始化，否则抛出异常。"""
         if not self._ensure_initialized():

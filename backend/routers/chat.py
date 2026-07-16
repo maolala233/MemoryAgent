@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -399,6 +400,12 @@ def _build_history_messages(
 
 async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
     """SSE 生成器。事件类型：trace / hits / token / done / error。"""
+    # 0) 立即推送一个 keepalive，避免 Next.js 代理 5s 超时窗口。
+    # 修复：前端 chat 500 — Next.js rewrites 代理层默认 5s 内拿不到首字节
+    # 就返回 500；之前的实现中，Mandol 懒加载 + 重型模型加载会阻塞
+    # 事件循环导致首条 SSE 延迟 > 5s。
+    yield _sse("keepalive", {"ts": time.time()})
+
     sess = db.get_session(req.session_id)
     if not sess:
         yield _sse("error", {"message": f"会话不存在: {req.session_id}"})

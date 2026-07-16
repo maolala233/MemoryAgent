@@ -17,7 +17,7 @@ from ..services.background_service import background_service
 from ..services.config_loader import apply_external_stores_config, apply_model_store_config
 from ..services.mandol_service import mandol_service
 from ..services.memory_service import memory_service
-from ..utils.logger import info, setup_logging
+from ..utils.logger import info, setup_logging, warn
 from .websocket_manager import ws_manager
 
 
@@ -43,13 +43,24 @@ async def lifespan(app: FastAPI):
         f"(offline={settings.mandol_reranker_offline_only})"
     )
 
-    # 初始化 Mandol 记忆引擎
+    # 初始化 Mandol 记忆引擎（启动时预热，避免首请求 SSE 卡 5s+）
+    # 原因：Mandol 初始化会同步加载 SentenceTransformer + CrossEncoder 模型
+    # 以及 1000+ 图谱/单元 JSON；如放到首次 /api/chat/stream 请求中执行，
+    # 会阻塞事件循环导致首条 SSE 事件延迟 > 5s，
+    # Next.js 代理层默认 5s 超时返回 HTTP 500。
     if settings.mandol_enabled:
         info("正在初始化 Mandol 记忆引擎...")
-        if mandol_service.initialize():
-            info("Mandol 记忆引擎已启用（懒加载，首次使用时初始化）")
-        else:
-            info("Mandol 初始化标记失败，继续启动")
+        # 旧接口：仅标记 _enabled，不做实际工作（懒加载）
+        mandol_service.initialize()
+        # 新接口：启动期就执行 _do_initialize()，把模型/快照加载完
+        try:
+            ok = mandol_service.warmup()
+            if ok:
+                info("Mandol 记忆引擎预热完成（启动期加载，无需懒加载）")
+            else:
+                info("Mandol 预热失败/未启用，将回退为懒加载")
+        except Exception as exc:
+            warn(f"Mandol 预热异常（将回退为懒加载）: {exc}")
 
     # memory_service.ensure_seed_data()  # 临时禁用种子数据，用于干净测试
     # 启动时重新索引已有的 vault 文件到 SQLite
