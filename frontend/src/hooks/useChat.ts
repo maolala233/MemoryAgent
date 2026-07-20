@@ -20,6 +20,14 @@ export interface UseChatOptions {
   topK: number;
   useRerank: boolean;
   saveToSpace: string;
+  /**
+   * 关闭上游 reasoning 模型的 think 能力. 适用于:
+   * - 长时间 thinking 后才出第一个字 (TTFT 过长)
+   * - 已知会陷入 thinking 死循环的题目
+   * 注意: ollama 部署可能不真正响应 (取决于版本),
+   * 我们的代码会同时下发 /no_think system prompt 作为双保险.
+   */
+  disableThinking?: boolean;
 }
 
 export function useChat(opts: UseChatOptions) {
@@ -242,6 +250,8 @@ export function useChat(opts: UseChatOptions) {
             use_rerank: overrides.useRerank ?? opts.useRerank ?? true,
             save_to_space: overrides.saveToSpace ?? opts.saveToSpace ?? "",
             context_token_budget: 3000,
+            // 关闭 reasoning 模型的 think 能力 (vllm 部署立即生效; ollama 走 /no_think 引导)
+            disable_thinking: overrides.disableThinking ?? opts.disableThinking ?? false,
           }),
           signal: ac.signal,
         });

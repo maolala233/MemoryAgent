@@ -34,6 +34,7 @@ from ..services.llm_stream import (
     stream_with_thinking_fallback,
 )
 from ..services.mandol_service import mandol_service
+from ..services.memory_service import memory_service
 from ..utils.logger import warn
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -65,7 +66,7 @@ class SessionCreate(BaseModel):
     profile_id: str = ""
     space_name: str = ""
     search_strategy: str = "auto"
-    top_k: int = 5
+    top_k: int = 15  # 之前 5: 召回太少,扩到 15
     use_rerank: bool = True
     save_to_space: str = ""
 
@@ -154,20 +155,50 @@ def _retrieve(query: str, *, strategy: str, top_k: int, use_rerank: bool,
     2. 图谱检索：从实体子图 + BFS 扩展获取关联文档
     3. RRF 融合：将两路结果去重融合后排序
 
+    当 Mandol 因 sentence-transformers 缺失导致 holistic 返回空时，
+    自动回退到基于 SQLite FTS5+LIKE 的关键词/语义混合检索，确保 LLM 至少拿到相关上下文。
+
     Returns:
         (hits, trace_steps) - 命中的单元字典列表 + 检索过程 trace 步骤
     """
     trace: List[Dict[str, Any]] = []
-    if not mandol_service.is_enabled:
-        return [], trace
     hits: List[Dict[str, Any]] = []
     s = (strategy or "auto").lower()
     try:
+        if not mandol_service.is_enabled:
+            trace.append({"step": "strategy", "value": "Mandol 未启用，回退到 SQLite hybrid"})
+            hits, fb_trace = _fallback_sqlite_retrieve(query, top_k=top_k)
+            trace.extend(fb_trace)
+            return hits, trace
         if s == "auto" or s == "holistic" or not s:
             trace.append({"step": "strategy", "value": "holistic（向量+图谱+RRF+Rerank）"})
             hits = mandol_service.holistic_retrieve(
                 query, top_k=top_k, use_rerank=use_rerank
             )
+            # === 新增: holistic 4 路融合为空时, 先回退到 Mandol 纯向量检索 ===
+            # 之前直接回退到 SQLite FTS5 会绕过 Mandol 的 embedding 优势
+            # (Mandol 跑分明显更好), 且 rebuild_spaces_from_units 修复后通常
+            # search_by_text 仍能命中, 而 holistic 偶尔因 rerank/图扩展返回 0
+            if not hits:
+                try:
+                    text_only_hits = mandol_service.search_by_text(query, top_k=top_k)
+                except Exception as exc:
+                    warn(f"Mandol text_only 兜底失败: {exc}")
+                    text_only_hits = []
+                if text_only_hits:
+                    trace.append({
+                        "step": "fallback",
+                        "value": f"Mandol holistic 返回空, 改用 Mandol text_only (命中 {len(text_only_hits)} 条)",
+                    })
+                    hits = text_only_hits
+                else:
+                    trace.append({
+                        "step": "fallback",
+                        "value": "Mandol holistic 与 text_only 均空, 回退到 SQLite hybrid 检索",
+                    })
+                    hits, fb_trace = _fallback_sqlite_retrieve(query, top_k=top_k)
+                    trace.extend(fb_trace)
+                return hits, trace
             # 图谱扩展：holistic rerank 通常把实体排到后面被截断，
             # 所以不依赖 hits 中的实体，而是主动执行实体子图检索获取种子
             try:
@@ -189,7 +220,7 @@ def _retrieve(query: str, *, strategy: str, top_k: int, use_rerank: bool,
                         "value": f"图谱 BFS 扩展：种子={entity_seeds}",
                     })
                     expanded = mandol_service.bfs_expand(
-                        entity_seeds, per_seed=3, hops=2
+                        entity_seeds, per_seed=5, hops=2
                     )
                     existing_uids = {h.get("uid", "") for h in hits}
                     graph_hits = []
@@ -273,10 +304,142 @@ def _retrieve(query: str, *, strategy: str, top_k: int, use_rerank: bool,
                 })
             except Exception as exc:
                 trace.append({"step": "space_filter", "value": f"空间过滤失败: {exc}"})
+
+        # === 关键词补强: Mandol embedding 召回后, 用 SQLite FTS5 抓含 query 关键词的 doc 强制召回 ===
+        # 背景: 业务手册里 "节假日" "罚息" "ETPD279" 等关键词比语义相似度更重要,
+        # 纯 embedding 可能把这些 chunk 排到 top-20 之外, 导致 LLM 看不到精确答案.
+        if hits:
+            try:
+                from ..services.retrieval_service import retriever
+                kw_hits = retriever.keyword_search(query, limit=5)
+                if kw_hits:
+                    existing = {h.get("uid", "") for h in hits}
+                    added = 0
+                    for r in kw_hits:
+                        rel = r.get("rel_path", "")
+                        uid = f"memory:{rel}"
+                        if uid in existing:
+                            continue
+                        doc_text = r.get("snippet", "") or r.get("title", "")
+                        try:
+                            full_doc = memory_service.get_document(rel) or {}
+                            body = (full_doc.get("body") or "").strip()
+                            if body:
+                                doc_text = body[:600]
+                        except Exception:
+                            pass
+                        hits.insert(added, {
+                            "uid": uid,
+                            "text": doc_text,
+                            "score": float(r.get("score", 0.5)) + 0.2,
+                            "metadata": {
+                                "rel_path": rel,
+                                "title": r.get("title", ""),
+                                "source": "sqlite_fts_keyword",
+                                "kw_hit": True,
+                            },
+                            "raw_data": {"text_content": doc_text},
+                        })
+                        existing.add(uid)
+                        added += 1
+                    if added:
+                        trace.append({
+                            "step": "keyword_augment",
+                            "value": f"SQLite FTS5 关键词补强: 命中 {len(kw_hits)} 条, 新增 {added} 条",
+                        })
+            except Exception as exc:
+                warn(f"关键词补强失败: {exc}")
     except Exception as exc:
         warn(f"检索失败: {exc}")
         trace.append({"step": "error", "value": f"检索失败: {exc}"})
 
+    return hits, trace
+
+
+def _fallback_sqlite_retrieve(query: str, *, top_k: int = 15) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """基于 SQLite FTS5+LIKE 的混合检索回退路径。
+
+    当 Mandol holistic 返回空(典型原因: sentence-transformers 缺失导致
+    StaticEmbeddingProvider 给出零向量、无法做语义相似度)时,
+    使用 retrieval_service.hybrid_search 拿到候选,
+    再转换为 chat 期望的 hit dict 格式。
+
+    转换说明:
+    - rel_path -> uid = "memory:rel_path"
+    - score 透传, 上限 1.0
+    - text = body 前 600 字
+    """
+    import asyncio
+    trace: List[Dict[str, Any]] = []
+    try:
+        from ..services.retrieval_service import retriever
+    except Exception as exc:
+        trace.append({"step": "fallback", "value": f"导入 retriever 失败: {exc}"})
+        return [], trace
+    try:
+        merged_coro = retriever.hybrid_search(query, limit=top_k)
+        # hybrid_search 是 async, 这里 _retrieve 是同步函数, 用 asyncio 运行
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 在已有 event loop 内: 用 run_coroutine_threadsafe 不可行(无线程),
+                # 此处退化为纯 keyword 路径
+                merged = retriever.keyword_search(query, limit=top_k)
+            else:
+                merged = loop.run_until_complete(merged_coro)
+        except RuntimeError:
+            merged = retriever.keyword_search(query, limit=top_k)
+    except Exception as exc:
+        trace.append({"step": "fallback", "value": f"hybrid_search 失败: {exc}"})
+        return [], trace
+    hits: List[Dict[str, Any]] = []
+    # keyword_search 没有 body 字段, 需要从 db 中按 rel_path 取出 body
+    from ..database import db
+    for r in merged:
+        rp = r.get("rel_path", "")
+        snippet = r.get("snippet", "") or r.get("summary", "")
+        if not rp:
+            continue
+        # 尝试从 db 取完整 body; keyword_search 只返回 snippet
+        # 关键修复: 必须用 get_doc (返回 body 字段), 旧代码用 get_document 是错的
+        body = ""
+        try:
+            doc = db.get_doc(rp) or {}
+            body = doc.get("content") or doc.get("body") or doc.get("summary") or ""
+        except Exception:
+            pass
+        if not body:
+            body = snippet
+        # 关键修复: 之前限制 600 字会把"每次额度申请前,均需重新添加管控白名单"等
+        # 关键信息截断, 改成保留全文 (LLM 端 _format_context 会再按 token 预算裁剪)
+        hits.append({
+            "uid": f"memory:{rp}",
+            "text": body,
+            "score": float(min(1.0, r.get("score", 0.0))),
+            "metadata": {
+                "rel_path": rp,
+                "kw_hit": r.get("kw_hit", False),
+                "sem_hit": r.get("sem_hit", False),
+                "kw_rank": r.get("kw_rank"),
+                "sem_rank": r.get("sem_rank"),
+                "track": r.get("track", ""),
+                "project_id": r.get("project_id", ""),
+            },
+            "raw_data": {"text_content": body, "rel_path": rp},
+            "scores": {
+                "kw": r.get("kw_score", 0.0),
+                "sem": r.get("sem_score", 0.0),
+                "final": float(min(1.0, r.get("score", 0.0))),
+            },
+            "ranks": {
+                "kw": int(r.get("kw_rank") or 0) if r.get("kw_rank") is not None else 0,
+                "sem": int(r.get("sem_rank") or 0) if r.get("sem_rank") is not None else 0,
+            },
+        })
+    trace.append({
+        "step": "fallback",
+        "value": f"SQLite hybrid 回退: 命中 {len(hits)} 条 (top_k={top_k})",
+    })
     return hits, trace
 
 
@@ -316,25 +479,41 @@ class StreamRequest(BaseModel):
     profile_id: Optional[str] = None
     space_name: Optional[str] = ""
     search_strategy: Optional[str] = "auto"
-    top_k: int = 5
+    top_k: int = 20  # 之前 15: 列表/分支型问题召回更全
     use_rerank: bool = True
     system_prompt: Optional[str] = None
     # 是否把本轮问答自动保存到 save_to_space
     save_to_space: Optional[str] = ""
     save_title: Optional[str] = None  # 可选标题
     # 上下文最大 token 预算
-    context_token_budget: int = 3000
+    context_token_budget: int = 6000  # 之前 4000: 加大以容纳列表型内容
+    # 关闭 reasoning 模型的 think 能力 (由 chat.page 开关控制)
+    disable_thinking: bool = False
+    # ===== 通用化风格层（与业务解耦）=====
+    style_preset: Optional[str] = "balanced"  # balanced/concise/formal/friendly/technical
+    system_role: Optional[str] = None  # 角色人设（场景相关），None 时使用默认
 
 
-def _format_context(hits: List[Dict[str, Any]], budget: int = 2400) -> str:
-    """将命中拼成 LLM 上下文，标注检索来源。"""
+def _format_context(
+    hits: List[Dict[str, Any]],
+    budget: int = 2400,
+    per_chunk_chars: int = 1800,
+) -> str:
+    """将命中拼成 LLM 上下文，标注检索来源。
+
+    Args:
+        hits: 检索命中。
+        budget: 总 token 预算。
+        per_chunk_chars: 单 chunk 字符上限（列表型问题已自动放大）。
+    """
     parts: List[str] = []
     used = 0
     for i, h in enumerate(hits, 1):
         text = (h.get("text") or "").strip()
         if not text:
             continue
-        snippet = text[:600]
+        # 单 chunk 字符上限可调（列表型问题调用方传 2400）
+        snippet = text[:per_chunk_chars]
         # 标注检索来源
         scores = h.get("scores") or {}
         ranks = h.get("ranks") or {}
@@ -361,23 +540,29 @@ def _build_history_messages(
     user_msg: str,
     hits: List[Dict[str, Any]],
     budget: int = 3000,
+    style_preset: Optional[str] = None,
+    system_role: Optional[str] = None,
+    per_chunk_chars: int = 1800,
 ) -> List[Dict[str, str]]:
-    """构造 LLM 消息：system(含记忆) + 历史（裁剪到预算） + user。"""
-    sys_prompt = (
-        "你是一个基于记忆的智能助手。请结合下方「记忆」回答用户问题。"
-        "记忆来源包括 [向量检索]、[向量+Rerank] 和 [图谱扩展] 三种，"
-        "请综合参考所有来源的信息给出准确回答。"
-        "如果记忆中没有相关信息，请明确说明并基于通用知识回答。"
-        "回答末尾列出引用的记忆编号（形如 [1][2]）。\n"
-        "【输出格式要求】\n"
-        "1) 若你是带推理能力的模型（reasoning/thinking），请先在内部完成推理，"
-        "然后必须以正常文本给出最终答案。\n"
-        "2) 最终答案必须以 '【回答】' 开头（用于与推理内容分离），"
-        "禁止只输出思考过程而不给结论。\n"
-        "3) 若记忆为空或不足，请基于通用知识直接回答并标注「未引用记忆」。"
+    """构造 LLM 消息：system(含记忆) + 历史（裁剪到预算） + user。
+
+    System prompt 采用三层组装：
+      [role] (场景相关) + [style] (场景无关) + [retrieval_constraints] (场景无关)
+    风格层来自 services.answer_style，避免业务关键词硬编码到此处。
+    """
+    # 关键修复: 系统 prompt 必须强制基于记忆回答
+    # 之前允许"基于通用知识回答"导致模型频繁使用自身知识幻觉
+    from ..services.answer_style import assemble_system_prompt, RECALL_GUIDE
+    sys_prompt = assemble_system_prompt(
+        role_text=system_role,
+        style_preset_name=style_preset,
     )
-    context = _format_context(hits, budget=max(800, budget // 2))
-    sys_block = f"{sys_prompt}\n\n记忆：\n{context}"
+    context = _format_context(
+        hits,
+        budget=max(800, budget // 2),
+        per_chunk_chars=per_chunk_chars,
+    )
+    sys_block = f"{sys_prompt}\n\n{RECALL_GUIDE}\n\n记忆：\n{context}"
 
     msgs: List[Dict[str, str]] = [{"role": "system", "content": sys_block}]
     # 倒序遍历 history，预算内尽量多塞，从最新往最旧
@@ -426,8 +611,24 @@ async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
     top_k = int(req.top_k or sess.get("top_k") or 5)
     use_rerank = bool(req.use_rerank if req.use_rerank is not None else sess.get("use_rerank", True))
 
+    # ===== 通用化风格层：根据问题形态自动微调检索参数（与业务解耦）=====
+    from ..services.answer_style import recommend_retrieval_overrides
+    overrides = recommend_retrieval_overrides(
+        req.message,
+        base_top_k=top_k,
+        base_budget=int(req.context_token_budget or 6000),
+    )
+    top_k = overrides["top_k"]
+    per_chunk_chars = overrides["per_chunk_chars"]
+    # context_token_budget 仍可由调用方覆盖（前端开关）
+    base_budget = int(req.context_token_budget or 6000)
+    context_budget = max(base_budget, overrides["context_token_budget"])
+
     # 2) 检索
     trace: List[Dict[str, Any]] = []  # 完整 trace（持久化到 db，供回看）
+    t_shape = {"step": "query_shape", "value": f"问题形态: {overrides['shape']['hints'] or ['通用']}，top_k={top_k}，budget={context_budget}"}
+    trace.append(t_shape)
+    yield _sse("trace", t_shape)
     t = {"step": "start", "value": f"开始检索：strategy={strategy}, top_k={top_k}, space={space_name or '全局'}"}
     trace.append(t)
     yield _sse("trace", t)
@@ -478,7 +679,11 @@ async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
     # 3) 构造历史 + 消息
     history = db.load_session_messages(req.session_id, limit=200)
     msgs = _build_history_messages(
-        history, req.message, hits, budget=int(req.context_token_budget or 3000)
+        history, req.message, hits,
+        budget=context_budget,
+        style_preset=req.style_preset,
+        system_role=req.system_role,
+        per_chunk_chars=per_chunk_chars,
     )
     t_ctx = {"step": "context", "value": f"构造消息 {len(msgs)} 条，约 {messages_token_count(msgs)} tokens（其中 system≈{messages_token_count([msgs[0]])} tokens，含 {len(hits)} 条记忆）"}
     trace.append(t_ctx)
@@ -493,23 +698,59 @@ async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
         memories=[_hit_to_memory_result(h).model_dump() for h in hits],
     )
 
-    # 5) 流式生成（支持 reasoning 模型的 thinking 内容；带 <think>/</think> 兜底切分）
+    # 5) 流式生成（支持 reasoning 模型的 thinking 内容；带 <think>/</think> 兜底切分 + thinking 续接）
     full_text = ""
     full_thinking = ""
     answer_text = ""  # 兜底字段初始化（流式抛错时也要能取到）
+    loop_abort_reason = ""
+    # 是否关闭上游 LLM 的 thinking 能力 (前端开关 / 请求参数 / session 默认)
+    _disable_thinking = bool(
+        getattr(req, "disable_thinking", False)
+        or sess.get("disable_thinking", False)
+    )
     try:
-        async for piece in stream_with_thinking_fallback(profile, msgs):
+        async for piece in stream_with_thinking_fallback(profile, msgs, disable_thinking=_disable_thinking):
             kind = piece.get("kind")
             text = piece.get("text") or ""
             if kind == "thinking":
                 full_thinking += text
                 yield _sse("thinking", {"content": text})
+            elif kind == "_loop_aborted":
+                # reasoning 模型陷入 thinking 死循环 (重复检测命中),
+                # stream 内部会立刻 return, 不会再来任何 piece.
+                # 这里仅记录, 后续做兜底.
+                loop_abort_reason = text
+                warn(f"LLM 思维循环截断: {text}")
             else:
                 full_text += text
                 yield _sse("token", {"content": text})
     except Exception as exc:
         warn(f"流式生成失败: {exc}")
         yield _sse("error", {"message": f"LLM 生成失败: {exc}"})
+
+    # 5.5) 兜底: 续接后仍无 content (死循环场景) → 从记忆原文拼答案
+    if not full_text.strip() and hits:
+        # disable_thinking 模式下是预期走兜底, 不加 (注: ...) 尾注 (因为是设计行为)
+        if _disable_thinking:
+            reason = "已关闭上游思考 (前端开关)"
+            fallback = (
+                "【回答】(由记忆原文直接整理)\n"
+                f"根据检索到的业务手册内容, 关于您的问题「{req.message}」, "
+                "相关说明如下:\n\n"
+                f"{_format_context(hits, budget=3200)}"
+            )
+        else:
+            reason = loop_abort_reason or "模型未产出答案"
+            fallback = (
+                "【回答】(由记忆原文直接整理)\n"
+                f"根据检索到的业务手册内容, 关于您的问题「{req.message}」, "
+                "相关说明如下:\n\n"
+                f"{_format_context(hits, budget=3200)}\n\n"
+                f"(注: {reason}, 已从记忆原文直接生成答案)"
+            )
+        warn(f"进入记忆兜底({reason}), 用 {len(hits)} 条记忆原文拼答案")
+        full_text = fallback
+        yield _sse("token", {"content": fallback})
 
     # 6) 保存 assistant 消息（含溯源 + 思考）
     db.append_session_message(

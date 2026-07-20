@@ -189,6 +189,9 @@ class ChatRequest(BaseModel):
     system_prompt: Optional[str] = None
     temperature: float = 0.3
     max_tokens: Optional[int] = None
+    # 关闭 reasoning 模型的 think 能力 (会传给上游 chat_template_kwargs.enable_thinking=false)
+    # 用于避免 qwen3.5 / deepseek-r1 等模型在长上下文下陷入 thinking 死循环
+    disable_thinking: bool = False
 
 
 class ChatResponse(BaseModel):

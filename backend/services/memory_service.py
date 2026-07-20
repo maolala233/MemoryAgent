@@ -222,6 +222,7 @@ class MemoryService:
             "keywords": frontmatter.get("keywords", []),
             "open_loops": loops,
             "frontmatter": frontmatter,
+            "body": body,  # 关键: 存到 memory_docs.body 供 LIKE 检索
             "size_bytes": len(body.encode("utf-8")),
             "updated_at": frontmatter.get("updated_at") or datetime.utcnow().isoformat(timespec="seconds"),
             "created_at": frontmatter.get("created_at"),
@@ -230,9 +231,49 @@ class MemoryService:
         db.upsert_doc(doc)
         db.upsert_fts(rel_path, title, body, doc.get("summary") or "")
         if embed:
+            # 改进: 对大文档按 chunk 切分,每个 chunk 独立 embedding 并入库
+            # 避免 body[:2000] 截断导致的中后段内容无法被语义检索命中
             try:
-                vector = _run_async(self._embedding.embed(f"{title}\n{body[:2000]}"))
-                db.upsert_vector(rel_path, vector, self._embedding.__class__.__name__)
+                from .chunking_service import chunking_service
+                chunks = chunking_service.chunk_document(body, max_tokens=250, overlap=40)
+                if not chunks:
+                    vector = _run_async(self._embedding.embed(f"{title}\n{body[:2000]}"))
+                    db.upsert_vector(rel_path, vector, self._embedding.__class__.__name__)
+                elif len(chunks) == 1:
+                    vector = _run_async(self._embedding.embed(f"{title}\n{chunks[0].text[:2000]}"))
+                    db.upsert_vector(rel_path, vector, self._embedding.__class__.__name__)
+                else:
+                    # 多个 chunk: 每个 chunk 独立 embedding,子 chunk 用于精确召回
+                    chunk_vectors = []
+                    for c in chunks:
+                        text = f"[{c.section}] {c.text}"
+                        try:
+                            vec = _run_async(self._embedding.embed(text))
+                            chunk_vectors.append((c.index, vec, c.section, c.text[:200]))
+                        except Exception as exc:
+                            warn(f"Chunk embedding failed for {rel_path}#{c.index}: {exc}")
+                    if chunk_vectors:
+                        # 主向量用所有 chunk 的平均,保证整文档语义可检索
+                        dim = len(chunk_vectors[0][1])
+                        avg = [0.0] * dim
+                        for _, v, _, _ in chunk_vectors:
+                            for i, x in enumerate(v):
+                                avg[i] += x
+                        avg = [x / len(chunk_vectors) for x in avg]
+                        db.upsert_vector(rel_path, avg, self._embedding.__class__.__name__)
+                        # 子 chunk 向量(用于精确命中某段)
+                        for idx, vec, sec, snippet in chunk_vectors:
+                            db.upsert_vector(
+                                f"{rel_path}#chunk{idx}",
+                                vec,
+                                self._embedding.__class__.__name__,
+                            )
+                            db.upsert_fts(
+                                f"{rel_path}#chunk{idx}",
+                                f"{title} - {sec}",
+                                snippet,
+                                snippet[:80],
+                            )
             except Exception as exc:
                 warn(f"Embedding failed for {rel_path}: {exc}")
         return doc

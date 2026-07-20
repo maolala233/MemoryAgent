@@ -216,7 +216,79 @@ class MandolService:
                 unit_store=unit_store,
             )
             info(f"已创建新的 Mandol MemorySystem，存储目录: {storage_root}")
+
+        # === 兜底: 从 unit metadata 反向重建 space 注册表 ===
+        # Mandol 用 MilvusUnitStore, 其 _spaces 只在内存 dict 不持久化;
+        # 重启或回退后, list_spaces() 返回空, get_units_in_spaces() 拿不到任何 unit,
+        # 导致 holistic 检索 0 命中. 这里从 unit.metadata["spaces"] 重建 _spaces.
+        try:
+            n = self.rebuild_spaces_from_units()
+            if n:
+                info(f"已从 unit metadata 重建 {n} 个 space 关联")
+        except Exception as exc:
+            warn(f"重建 space 关联失败: {exc}")
+
         return True
+
+    def rebuild_spaces_from_units(self) -> int:
+        """从 unit.metadata["spaces"] 反向重建 MilvusUnitStore._spaces 注册表。
+
+        Returns:
+            重建的 (space, unit) 关联数量。
+        """
+        from mandol import SpaceName, Uid
+
+        system = self._require()
+        store = system.semantic_map._store  # noqa: SLF001
+        all_units = system.semantic_map.list_units()
+        if not all_units:
+            return 0
+
+        # 收集 (space_name, uid) 关系, 同一个 (space, uid) 只写一次
+        # 避免重复 add_unit 触发 MemorySpace 内部 set 报错
+        pairs: set[tuple[str, str]] = set()
+        spaces_index: dict[str, set[str]] = {}
+        for u in all_units:
+            raw_spaces = (u.metadata or {}).get("spaces", []) or []
+            if isinstance(raw_spaces, str):
+                raw_spaces = [raw_spaces]
+            for sname in raw_spaces:
+                sname = str(sname)
+                uid = str(u.uid)
+                if (sname, uid) in pairs:
+                    continue
+                pairs.add((sname, uid))
+                spaces_index.setdefault(sname, set()).add(uid)
+
+        if not spaces_index:
+            return 0
+
+        # 按 space_name 创建 MemorySpace 并填充 unit_uids
+        for sname, uids in spaces_index.items():
+            existing = store.get_space(SpaceName(sname))
+            if existing is None:
+                space = system.semantic_map.create_space(sname)
+            else:
+                space = existing
+            for uid in uids:
+                try:
+                    space.add_unit(Uid(uid))
+                except Exception:
+                    # 重复添加时 set 已存在, 静默跳过
+                    pass
+            store.upsert_spaces([space])
+
+        # 重建 faiss 向量索引 (从 unit.embedding 重新装载)
+        # 否则 _index.search() 拿不到任何结果, 即使 candidate 集不为空
+        try:
+            system.semantic_map.rebuild_index_from_store()
+            info("rebuild_spaces_from_units: faiss index 已重建")
+        except Exception as exc:
+            warn(f"重建 faiss index 失败: {exc}")
+
+        info(f"rebuild_spaces_from_units: 重建 {len(spaces_index)} 个 space, 共 {len(pairs)} 条 unit 关联")
+        return len(pairs)
+
 
     def _build_neo4j_graph_store(self) -> Any:
         """构造 Neo4j GraphStore，从 settings 读取连接信息。"""
@@ -527,17 +599,29 @@ class MandolService:
         skipped = 0
         # 按 batch 处理：先收集要重算的 unit，再统一 encode
         pending = []
+        zero_count = 0
+        no_text_count = 0
+        non_zero_count = 0
+        for u in all_units[:3]:
+            cur = getattr(u, "embedding", None)
+            arr = np.asarray(cur, dtype=np.float32) if cur is not None else None
+            warn(f"[probe] uid={u.uid} cur_type={type(cur).__name__} cur_len={len(cur) if cur is not None and hasattr(cur, '__len__') else 'NA'} arr_sum={float(arr.sum()) if arr is not None and arr.size else 'NA'} raw_data_text_len={len((u.raw_data or {}).get('text_content', ''))}")
+
         for u in all_units:
             scanned += 1
             cur = getattr(u, "embedding", None)
             if only_zero and not _is_zero(cur):
+                non_zero_count += 1
                 skipped += 1
                 continue
+            zero_count += 1
             text = (u.raw_data or {}).get("text_content", "") or ""
             if not text:
+                no_text_count += 1
                 skipped += 1
                 continue
             pending.append(u)
+        warn(f"[reembed] scanned={scanned} pending={len(pending)} non_zero={non_zero_count} zero={zero_count} no_text={no_text_count}")
 
         for i in range(0, len(pending), batch_size):
             batch = pending[i : i + batch_size]
@@ -550,7 +634,8 @@ class MandolService:
                     raise RuntimeError("system.semantic_map._embedder is None")
                 new_vecs = embedder.embed_text(texts)
             except Exception as exc:
-                warn(f"embed_text 失败 (batch {i // batch_size}): {exc}")
+                import traceback as _tb
+                warn(f"embed_text 失败 (batch {i // batch_size}): {exc}\n{_tb.format_exc()}")
                 skipped += len(batch)
                 continue
             for u, vec in zip(batch, new_vecs):
@@ -775,6 +860,34 @@ class MandolService:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        # ⭐ 兜底: gemma4:12b 等模型只输出 reasoning 不输出 content 时,
+        # 退化到流式调用（流式会正确分离 thinking/content）。
+        if not (answer or "").strip():
+            try:
+                from mandol.ports.llm_provider import ChatMessage
+                context_parts = []
+                for i, h in enumerate(hits, 1):
+                    text = h.unit.raw_data.get("text_content", "")
+                    context_parts.append(f"[{i}] {text}")
+                context = "\n\n".join(context_parts) if context_parts else "无相关记忆"
+                prompt = f"基于以下记忆回答问题。\n\n记忆:\n{context}\n\n问题: {query}\n\n回答:"
+                messages = []
+                if system_prompt:
+                    messages.append(ChatMessage(role="system", content=system_prompt))
+                messages.append(ChatMessage(role="user", content=prompt))
+                full_text = ""
+                for token in sys_obj.llm.chat_stream(
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens or 1024,
+                ):
+                    delta = token if isinstance(token, str) else getattr(token, "content", "")
+                    if delta:
+                        full_text += delta
+                if full_text.strip():
+                    answer = full_text
+            except Exception as exc:
+                warn(f"流式兜底生成失败: {exc}")
         return {
             "answer": answer,
             "hits": hits_dicts,

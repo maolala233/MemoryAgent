@@ -173,6 +173,12 @@ class DocumentChunker:
         current_chunk_parts: List[str] = []
         current_tokens = 0
         chunk_index = 0
+        # 继承父单元的标识性 metadata (source_path / title / track / memory_type),
+        # 否则子块在向量检索命中时丢失来源信息, LLM 也无法定位引文。
+        _INHERIT_KEYS = (
+            "source_path", "title", "track", "memory_type", "type",
+            "source", "space_name", "project_id", "keywords",
+        )
 
         for sentence in sentences:
             sentence_tokens = estimate_tokens(sentence)
@@ -180,7 +186,6 @@ class DocumentChunker:
             if current_tokens + sentence_tokens > self._max_tokens and current_chunk_parts:
                 chunk_text = " ".join(current_chunk_parts)
                 chunk_uid = f"{unit.uid}:chunk:{chunk_index}"
-
                 chunk_unit = MemoryUnit(
                     uid=Uid(chunk_uid),
                     raw_data={self._text_key: chunk_text},
@@ -191,6 +196,12 @@ class DocumentChunker:
                         "spaces": list(unit.metadata.get("spaces", [])),
                     },
                 )
+                # 继承父单元的标识性 metadata (source_path / title / track / memory_type),
+                # 否则子块在向量检索命中时丢失来源信息, LLM 也无法定位引文。
+                for k in _INHERIT_KEYS:
+                    v = unit.metadata.get(k)
+                    if v is not None and k not in chunk_unit.metadata:
+                        chunk_unit.metadata[k] = v
                 chunks.append(chunk_unit)
                 chunk_index += 1
 
@@ -225,6 +236,10 @@ class DocumentChunker:
                     "spaces": list(unit.metadata.get("spaces", [])),
                 },
             )
+            for k in _INHERIT_KEYS:
+                v = unit.metadata.get(k)
+                if v is not None and k not in chunk_unit.metadata:
+                    chunk_unit.metadata[k] = v
             chunks.append(chunk_unit)
 
         logger.debug(

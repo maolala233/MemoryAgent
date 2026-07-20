@@ -1833,11 +1833,13 @@ class MemorySystem:
     search = holistic_retrieve
 
     _DEFAULT_ASK_SYSTEM_PROMPT = (
-        "You are an intelligent assistant powered by a memory system. "
-        "Answer the user's question based on the retrieved memory content below. "
-        "If the retrieved results contain no relevant information, say so honestly. "
-        "Do not fabricate information.\n\n"
-        "Retrieved results:\n{context}"
+        "你是一个基于记忆系统的智能助手。请严格依据下方检索到的记忆内容回答用户问题。\n"
+        "要求:\n"
+        "1. 优先使用记忆中的原文信息, 包括步骤、路径、参数、错误码等关键细节。\n"
+        "2. 用中文回答, 使用简洁清晰的结构 (分点/编号)。\n"
+        "3. 如果检索到的内容确实无法回答问题, 明确说明缺少哪类信息, 不要编造。\n"
+        "4. 涉及操作路径时尽量完整列出 (如:对公线上融资平台-信贷工厂-...)。\n\n"
+        "检索到的记忆内容:\n{context}"
     )
 
     def ask(

@@ -10,14 +10,19 @@ Schema:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config.settings import settings
+
+_log = logging.getLogger("memoryagent.database")
+def warn(msg: str, *args, **kwargs) -> None:
+    _log.warning(msg, *args, **kwargs)
 
 _LOCK = threading.RLock()
 
@@ -33,6 +38,7 @@ CREATE TABLE IF NOT EXISTS memory_docs (
     keywords_json   TEXT DEFAULT '[]',
     open_loops_json TEXT DEFAULT '[]',
     frontmatter_json TEXT DEFAULT '{}',
+    body            TEXT DEFAULT '',
     size_bytes      INTEGER DEFAULT 0,
     indexed_at      TEXT,
     verified_at     TEXT,
@@ -110,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_updated ON chat_sessions(updated_at DESC
 
 
 def _now_iso() -> str:
-    return datetime.utcnow().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Database:
@@ -157,11 +163,11 @@ class Database:
                 INSERT INTO memory_docs (
                     rel_path, title, memory_type, track, project_id, status,
                     summary, keywords_json, open_loops_json, frontmatter_json,
-                    size_bytes, indexed_at, verified_at, updated_at, created_at
+                    body, size_bytes, indexed_at, verified_at, updated_at, created_at
                 ) VALUES (
                     :rel_path, :title, :memory_type, :track, :project_id, :status,
                     :summary, :keywords_json, :open_loops_json, :frontmatter_json,
-                    :size_bytes, :indexed_at, :verified_at, :updated_at, :created_at
+                    :body, :size_bytes, :indexed_at, :verified_at, :updated_at, :created_at
                 )
                 ON CONFLICT(rel_path) DO UPDATE SET
                     title=excluded.title,
@@ -173,6 +179,7 @@ class Database:
                     keywords_json=excluded.keywords_json,
                     open_loops_json=excluded.open_loops_json,
                     frontmatter_json=excluded.frontmatter_json,
+                    body=excluded.body,
                     size_bytes=excluded.size_bytes,
                     indexed_at=excluded.indexed_at,
                     verified_at=excluded.verified_at,
@@ -189,6 +196,7 @@ class Database:
                     "keywords_json": json.dumps(doc.get("keywords", []), ensure_ascii=False),
                     "open_loops_json": json.dumps(doc.get("open_loops", []), ensure_ascii=False),
                     "frontmatter_json": json.dumps(doc.get("frontmatter", {}), ensure_ascii=False),
+                    "body": doc.get("body", ""),
                     "size_bytes": doc.get("size_bytes", 0),
                     "indexed_at": doc.get("indexed_at") or _now_iso(),
                     "verified_at": doc.get("verified_at"),
@@ -278,7 +286,41 @@ class Database:
     ) -> List[Dict[str, Any]]:
         if not query.strip():
             return []
-        fts_query = self._build_fts_query(query)
+        import re as _re
+        # 提取策略: 找出 CJK 字符中所有可能的 2+ 字短语
+        # 这样 "科创e贷对财报有哪些要求" 中 "财报" 也能被提取
+        cjk_phrases = []
+        # 1) 在字母/数字边界切分, 再取 2+ 字 CJK 段
+        for m in _re.finditer(r"[\u4e00-\u9fff]+(?:[A-Za-z0-9]+[\u4e00-\u9fff]+)*", query):
+            text = m.group()
+            sub_blocks = _re.split(r"[A-Za-z0-9]+", text)
+            for blk in sub_blocks:
+                if len(blk) >= 2:
+                    cjk_phrases.append(blk)
+        # 2) 提取完整 mix 段(如 "科创e贷")
+        for m in _re.finditer(r"[\u4e00-\u9fff]+[A-Za-z0-9]+[\u4e00-\u9fff]+", query):
+            if m.group() not in cjk_phrases:
+                cjk_phrases.append(m.group())
+        # 3) 滑动窗口提取所有可能 2+ 字子串
+        # 例如 "财报" 从 "贷对财报有哪些要求" 中提取
+        all_cjk = "".join(_re.findall(r"[\u4e00-\u9fff]+", query))
+        if len(all_cjk) >= 2:
+            # 提取所有 >=2 字的子串 (避免太长, 取到 4 字)
+            for i in range(len(all_cjk)):
+                for j in range(i + 2, min(i + 5, len(all_cjk) + 1)):
+                    sub = all_cjk[i:j]
+                    if sub not in cjk_phrases:
+                        cjk_phrases.append(sub)
+        # 去重
+        seen = set()
+        uniq = []
+        for p in cjk_phrases:
+            if p and p not in seen:
+                seen.add(p)
+                uniq.append(p)
+        cjk_phrases = uniq
+        alnum_tokens = _re.findall(r"[A-Za-z0-9_\-]+", query)
+
         clauses = ["d.status != 'deleted'"]
         params: List[Any] = []
         if track:
@@ -291,41 +333,234 @@ class Database:
             clauses.append("d.status=?")
             params.append(status)
         where = " AND ".join(clauses)
-        sql = f"""
-            SELECT d.rel_path, d.title, d.summary, d.memory_type, d.track,
-                   d.updated_at, snippet(memory_fts, 2, '<mark>', '</mark>', '…', 12) as snippet,
-                   rank as score
-            FROM memory_fts
-            JOIN memory_docs d ON d.rel_path = memory_fts.rel_path
-            WHERE memory_fts MATCH ? AND {where}
-            ORDER BY rank
-            LIMIT ?
-        """
-        params = [fts_query] + params + [limit]
-        with self.session() as conn:
-            rows = conn.execute(sql, params).fetchall()
-        results = []
-        for r in rows:
-            score = 1.0 / (1.0 + abs(float(r["score"])))
-            results.append(
-                {
-                    "rel_path": r["rel_path"],
-                    "title": r["title"] or r["rel_path"],
-                    "snippet": r["snippet"] or r["summary"] or "",
-                    "score": round(score, 4),
-                    "memory_type": r["memory_type"],
-                    "track": r["track"],
-                    "updated_at": r["updated_at"],
-                }
+
+        fts_query = ""
+        if alnum_tokens:
+            fts_query = " AND ".join(f'"{t}"' for t in alnum_tokens)
+
+        like_clauses = []
+        like_params: List[Any] = []
+        for ph in cjk_phrases:
+            like_clauses.append("d.body LIKE ?")
+            like_params.append(f"%{ph}%")
+
+        cjk_hit_expr = (" + ".join(
+            "CASE WHEN d.body LIKE ? THEN 1 ELSE 0 END" for _ in cjk_phrases
+        )) if cjk_phrases else "0"
+
+        fts_score_select = "0"
+        fts_filter_sql = ""
+        fts_filter_params: List[Any] = []
+        # 关键修复: FTS5 unicode61 tokenize 时, CJK + alnum 混排的 token 会被切成
+        # "报错tb25514" 这种 CJK+alnum 整体 token, 单独查 "TB25514"* prefix 匹配不上
+        # 之前的实现把 FTS 当作 AND 过滤, 反而把含 alnum 的真实文档过滤掉了
+        # 改为: alnum 全部用 LIKE 直接搜 body(每个 token %t%), 不再走 FTS5 alnum 路径
+        # FTS5 只作为 score 加成 (bonus), 不再作为 filter
+        alnum_like_clauses = []
+        alnum_like_params: List[Any] = []
+        for t in alnum_tokens:
+            if len(t) >= 2:
+                alnum_like_clauses.append("d.body LIKE ?")
+                alnum_like_params.append(f"%{t}%")
+        if alnum_tokens:
+            # FTS5 仍用 prefix, 但只作为 score 维度; 不作为 filter
+            fts_parts = [f'"{t}"*' for t in alnum_tokens if len(t) >= 3]
+            if fts_parts:
+                fts_query = " AND ".join(fts_parts)
+                fts_score_select = (
+                    "COALESCE((SELECT -rank FROM memory_fts "
+                    "WHERE memory_fts.rel_path=d.rel_path AND memory_fts MATCH ?), 0)"
+                )
+                fts_filter_params = [fts_query]
+            else:
+                fts_query = ""
+        else:
+            fts_query = ""
+
+        rows = []
+        if cjk_phrases:
+            # 主体: 命中 (任一 CJK 短语 OR 全部 alnum token 匹配) 都在候选
+            where_clauses = where
+            like_filter = " OR ".join(like_clauses)
+            if alnum_like_clauses:
+                # alnum 也作为候选(OR 关系, 至少有一个 alnum 命中即可)
+                alnum_or = " OR ".join(alnum_like_clauses)
+                like_filter = f"({like_filter}) OR ({alnum_or})"
+            # alnum 命中数 作为排序维度(强信号, 直接在 SQL 里排)
+            alnum_hit_sql = ""
+            if alnum_like_clauses:
+                alnum_hit_sql = "(" + " + ".join(
+                    f"CASE WHEN d.body LIKE ? THEN 1 ELSE 0 END" for _ in alnum_like_clauses
+                ) + ")"
+            # 把 alnum 命中重复一份给 ORDER BY 用
+            order_params = list(alnum_like_params)
+            sql = f"""
+                SELECT d.rel_path, d.title, d.summary, d.memory_type, d.track,
+                       d.updated_at, d.body,
+                       ({cjk_hit_expr}) as cjk_hits,
+                       {fts_score_select} as fts_score,
+                       {alnum_hit_sql or '0'} as alnum_hits
+                FROM memory_docs d
+                WHERE {where_clauses}
+                  AND ({like_filter})
+                ORDER BY alnum_hits DESC, cjk_hits DESC, fts_score DESC
+                LIMIT ?
+            """
+            # params 顺序:
+            #   1. like_params (cjk)      -> cjk_hit_expr 内
+            #   2. fts_filter_params       -> fts_score_select 内
+            #   3. order_params (alnum)    -> alnum_hits 内
+            #   4. params (track等)        -> where 子句
+            #   5. like_params (cjk)       -> WHERE like_filter 内
+            #   6. alnum_like_params       -> WHERE alnum_or 内
+            #   7. limit
+            full_params = (
+                like_params                   # cjk_hit_expr
+                + fts_filter_params           # fts_score_select
+                + order_params                # alnum_hits (order by)
+                + params                      # where 子句
+                + like_params                 # WHERE 中的 cjk OR 子句
+                + alnum_like_params           # WHERE 中的 alnum OR 子句
+                + [limit]
             )
-        return results
+            try:
+                with self.session() as conn:
+                    rows = conn.execute(sql, full_params).fetchall()
+            except Exception as exc:
+                warn(f"search_keyword main failed: {exc}")
+        elif fts_query:
+            # 纯 alnum query: 用 FTS5 主搜
+            sql = f"""
+                SELECT d.rel_path, d.title, d.summary, d.memory_type, d.track,
+                       d.updated_at, d.body,
+                       0 as cjk_hits,
+                       -rank as fts_score
+                FROM memory_fts
+                JOIN memory_docs d ON d.rel_path = memory_fts.rel_path
+                WHERE memory_fts MATCH ? AND {where}
+                ORDER BY rank
+                LIMIT ?
+            """
+            full_params = [fts_query] + params + [limit]
+            try:
+                with self.session() as conn:
+                    rows = conn.execute(sql, full_params).fetchall()
+            except Exception as exc:
+                warn(f"search_keyword FTS failed: {exc}")
+            # FTS5 兜底: 当 FTS 未命中时(典型情况: CJK+alnum 混排导致 unicode61
+            # tokenize 时把 TB25514/ETPD279 之类 token 切碎), 用 LIKE 直接搜 body
+            if not rows and alnum_tokens:
+                like_clauses2 = []
+                like_params2: List[Any] = []
+                for t in alnum_tokens:
+                    like_clauses2.append("d.body LIKE ?")
+                    like_params2.append(f"%{t}%")
+                like_filter2 = " AND ".join(like_clauses2)
+                sql2 = f"""
+                    SELECT d.rel_path, d.title, d.summary, d.memory_type, d.track,
+                           d.updated_at, d.body,
+                           0 as cjk_hits,
+                           0 as fts_score
+                    FROM memory_docs d
+                    WHERE {where} AND ({like_filter2})
+                    LIMIT ?
+                """
+                full_params2 = like_params2 + params + [limit]
+                try:
+                    with self.session() as conn:
+                        rows = conn.execute(sql2, full_params2).fetchall()
+                except Exception as exc:
+                    warn(f"search_keyword LIKE fallback failed: {exc}")
+
+        results = []
+        total_phrases = max(1, len(cjk_phrases))
+        for r in rows:
+            cjk_hits = int(r["cjk_hits"] or 0)
+            fts_score = float(r["fts_score"] or 0)
+            body_val = r["body"] or ""
+            # 命中比例 (0~1) 主导得分, 命中数二次加成, FTS 加小权重
+            hit_ratio = cjk_hits / total_phrases
+            abs_bonus = min(1.0, cjk_hits / 4.0)
+            # alnum 命中加成: 纯 alnum query (如 ETPD279/DPRB/2103010)
+            # 必须先看 body 是否真的包含这些 token, 给予与 CJK 类似的命中权重
+            alnum_hit = 0
+            if alnum_tokens and body_val:
+                for t in alnum_tokens:
+                    if t in body_val:
+                        alnum_hit += 1
+            alnum_total = max(1, len(alnum_tokens))
+            alnum_ratio = alnum_hit / alnum_total if alnum_tokens else 0.0
+            if cjk_phrases:
+                # 混合 query: 关键修复 — alnum 命中应该是硬过滤信号
+                # 如果 alnum 完全没命中(alnum_ratio=0), 而 CJK 命中很多, 仍可能误匹配
+                # 加权策略:
+                #   alnum 完全命中 → 0.5 加成
+                #   CJK 命中比例 → 0.3 加成
+                #   命中绝对数   → 0.1 加成
+                #   FTS bonus   → 0.1 加成
+                if alnum_tokens:
+                    # 有 alnum: 权重偏向 alnum (technical terms 是强信号)
+                    score = (
+                        0.5 * alnum_ratio
+                        + 0.3 * hit_ratio
+                        + 0.1 * abs_bonus
+                        + 0.1 * min(1.0, max(0.0, fts_score))
+                    )
+                else:
+                    # 无 alnum: 纯 CJK query
+                    score = 0.6 * hit_ratio + 0.3 * abs_bonus + 0.1 * min(1.0, max(0.0, fts_score))
+            else:
+                # 纯 alnum query: 命中比例 + FTS rank, FTS 权重调高
+                score = 0.6 * alnum_ratio + 0.3 * min(1.0, alnum_hit / 2.0) + 0.1 * max(0.0, fts_score)
+            score = min(1.0, max(0.0, score))
+            snippet = ""
+            if body_val and cjk_phrases:
+                for ph in cjk_phrases:
+                    idx = body_val.find(ph)
+                    if idx >= 0:
+                        snippet = body_val[max(0, idx - 30):idx + 100]
+                        break
+            results.append({
+                "rel_path": r["rel_path"],
+                "title": r["title"] or r["rel_path"],
+                "snippet": snippet or r["summary"] or "",
+                "score": round(score, 4),
+                "memory_type": r["memory_type"],
+                "track": r["track"],
+                "updated_at": r["updated_at"],
+            })
+        # 重新按 score 排序 (ORDER BY cjk_hits 已无法直接对应新 score)
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:limit]
 
     @staticmethod
     def _build_fts_query(query: str) -> str:
-        tokens = [t for t in query.strip().split() if t]
+        """构造 FTS5 查询。
+
+        处理:
+        - 英文/数字 token 用引号包裹,避免被 unicode61 切碎
+        - 中文整段作为 phrase 查询(unicode61 会保留 CJK 段作为索引项)
+        - 多个 token 之间用 AND,确保召回的相关性
+        """
+        import re
+        tokens = [t for t in re.split(r"\s+", query.strip()) if t]
         if not tokens:
             return ""
-        return " ".join(f'"{t}"' if " " in t else t for t in tokens)
+
+        def _is_cjk(s: str) -> bool:
+            return any("\u4e00" <= c <= "\u9fff" for c in s)
+
+        expanded: list[str] = []
+        for t in tokens:
+            if " " in t:
+                expanded.append(f'"{t}"')
+            elif _is_cjk(t):
+                # CJK: 直接作为 phrase 查询(unicode61 会按段切)
+                expanded.append(f'"{t}"')
+            else:
+                # 英文/数字/混合: 也加引号
+                expanded.append(f'"{t}"')
+        return " AND ".join(expanded)
 
     def get_suggestions(self, prefix: str, limit: int = 8) -> List[str]:
         if not prefix.strip():
@@ -679,6 +914,10 @@ class Database:
             "project_id": row["project_id"],
             "status": row["status"],
             "summary": row["summary"],
+            # body/content 必须返回, 否则 chat fallback 拿不到完整文本,
+            # LLM 只能看到被截断的 summary, 会误判"记忆中没有相关信息"
+            "body": row["body"] or "",
+            "content": row["body"] or "",
             "keywords": json.loads(row["keywords_json"] or "[]"),
             "open_loops": json.loads(row["open_loops_json"] or "[]"),
             "frontmatter": json.loads(row["frontmatter_json"] or "{}"),

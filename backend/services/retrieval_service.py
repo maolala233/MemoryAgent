@@ -40,7 +40,7 @@ class MemoryRetriever:
         return db.search_keyword(query, limit=limit, **filters)
 
     async def semantic_search(self, query: str, limit: int = 20,
-                              min_score: float = 0.15, **filters) -> List[Dict[str, Any]]:
+                              min_score: float = 0.10, **filters) -> List[Dict[str, Any]]:
         if not query.strip():
             return []
         try:
@@ -78,21 +78,34 @@ class MemoryRetriever:
         return results
 
     async def hybrid_search(self, query: str, limit: int = 20, **filters) -> List[Dict[str, Any]]:
-        kw_weight = self._cfg.get("strategies", {}).get("hybrid", {}).get("keyword_weight", 0.55)
+        # 关键词/向量权重: 0.5/0.5, 关键词略优
+        # 业务手册的关键词(如 ETPD279、财报)精确匹配比语义相似更重要
+        kw_weight = self._cfg.get("strategies", {}).get("hybrid", {}).get("keyword_weight", 0.5)
         sem_weight = 1.0 - kw_weight
-        kw = self.keyword_search(query, limit=limit * 2, **filters)
-        sem = await self.semantic_search(query, limit=limit * 2, **filters)
+        kw = self.keyword_search(query, limit=limit * 3, **filters)
+        sem = await self.semantic_search(query, limit=limit * 3, **filters)
         merged: Dict[str, Dict[str, Any]] = {}
-        for r in kw:
-            merged[r["rel_path"]] = {**r, "score": r["score"] * kw_weight}
-        for r in sem:
-            if r["rel_path"] in merged:
-                merged[r["rel_path"]]["score"] += r["score"] * sem_weight
-                # enrich snippet if missing
-                if not merged[r["rel_path"]].get("snippet") and r.get("snippet"):
-                    merged[r["rel_path"]]["snippet"] = r["snippet"]
+        # 1) 关键词命中: 强信号, 直接置高, KW 排名加成
+        for i, r in enumerate(kw):
+            base = r["score"] * kw_weight
+            # 排名加成: top1 +0.2, top2-3 +0.1, top4-5 +0.05
+            if i == 0:
+                rank_bonus = 0.2
+            elif i < 3:
+                rank_bonus = 0.1
+            elif i < 5:
+                rank_bonus = 0.05
             else:
-                merged[r["rel_path"]] = {**r, "score": r["score"] * sem_weight}
+                rank_bonus = 0.0
+            merged[r["rel_path"]] = {**r, "score": base + rank_bonus, "kw_hit": True, "kw_rank": i}
+        # 2) 语义命中: 常规权重, 对 KW 命中叠加
+        for r in sem:
+            sem_score = r["score"] * sem_weight
+            if r["rel_path"] in merged:
+                # 双源命中: 提升分数
+                merged[r["rel_path"]]["score"] += sem_score + 0.1
+            else:
+                merged[r["rel_path"]] = {**r, "score": sem_score, "kw_hit": False}
         ranked = sorted(merged.values(), key=lambda x: x["score"], reverse=True)
         return ranked[:limit]
 

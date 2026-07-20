@@ -23,9 +23,11 @@ const STRATEGY_LABEL: Record<Strategy, string> = {
 function TracePanel({
   trace,
   thinking,
+  disableThinking,
 }: {
   trace: { step: string; value: string; uid?: string; title?: string; snippet?: string; score?: number }[];
-  thinking?: string;
+  thinking: string;
+  disableThinking?: boolean;
 }) {
   if (trace.length === 0 && !thinking) return null;
   // 按 step 类别分组
@@ -141,7 +143,7 @@ function TracePanel({
         )}
 
         {/* 4. 生成过程（含 thinking 折叠） */}
-        {(genLines.length > 0 || thinking) && (
+        {!disableThinking && (genLines.length > 0 || thinking) && (
           <Section icon="auto_awesome" title="模型推理">
             <ol className="space-y-1 pl-4 list-decimal text-on-surface-variant">
               {genLines.map((t, i) => (
@@ -248,6 +250,7 @@ function MessageBubble({
   streamingMemories,
   streamingTrace,
   streamingThinking,
+  disableThinking,
   onSave,
   spaces,
 }: {
@@ -256,6 +259,7 @@ function MessageBubble({
   streamingMemories?: MemoryResult[];
   streamingTrace?: { step: string; value: string; uid?: string; title?: string; snippet?: string; score?: number }[];
   streamingThinking?: string;
+  disableThinking?: boolean;
   onSave?: (msgId: number, space: string) => void;
   spaces: string[];
 }) {
@@ -264,8 +268,10 @@ function MessageBubble({
   const [saveSpace, setSaveSpace] = useState(spaces[0] || "");
   const memories = isUser
     ? (msg.memories || [])
-    : (isStreaming && msg.content === "" ? streamingMemories : msg.memories) || [];
-  const rawTrace = isStreaming && msg.content === "" ? streamingTrace || [] : msg.trace || [];
+    : (isStreaming ? streamingMemories : msg.memories) || [];
+  // 重要: 只要还在 streaming 就用 streamingTrace, 不要看 msg.content
+  // 之前用 `isStreaming && msg.content === ""` 会在首个 token 到达时让 trace 整个消失 (截图2)
+  const rawTrace = isStreaming ? (streamingTrace || []) : (msg.trace || []);
   const trace = (rawTrace as Array<Record<string, unknown>>)
     .map((t) => ({
       step: String(t.step || ""),
@@ -276,7 +282,7 @@ function MessageBubble({
       score: typeof t.score === "number" ? (t.score as number) : undefined,
     }))
     .filter((t) => t.step);
-  const displayThinking = isStreaming && msg.content === ""
+  const displayThinking = isStreaming
     ? (streamingThinking || msg.thinking || "")
     : (msg.thinking || "");
 
@@ -301,7 +307,7 @@ function MessageBubble({
         )}
         {/* 过程（仅 assistant 第一次生成时显示） */}
         {!isUser && trace.length > 0 && (
-          <TracePanel trace={trace} thinking={displayThinking} />
+          <TracePanel trace={trace} thinking={displayThinking} disableThinking={disableThinking} />
         )}
         <div
           className={[
@@ -404,6 +410,16 @@ function ChatContent() {
   const [useRerank, setUseRerank] = useState(true);
   const [saveToSpace, setSaveToSpace] = useState("");
   const [showSettings, setShowSettings] = useState(true);
+  // 关闭上游 reasoning 模型的 think 能力, 解决 qwen3.5/deepseek-r1 的 thinking 死循环/TTFT 过长
+  // 持久化到 localStorage, 刷新页面后保留
+  const [disableThinking, setDisableThinking] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("chat.disable_thinking") === "1";
+  });
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("chat.disable_thinking", disableThinking ? "1" : "0");
+  }, [disableThinking]);
 
   const chat = useChat({
     sessionId,
@@ -413,6 +429,7 @@ function ChatContent() {
     topK,
     useRerank,
     saveToSpace,
+    disableThinking,
   });
 
   // 选择会话时同步它的配置
@@ -755,6 +772,19 @@ function ChatContent() {
                   Rerank
                 </label>
 
+                {/* 关闭 thinking - 解决 reasoning 模型死循环/TTFT 过长 */}
+                <label
+                  className="flex items-center gap-1 text-label-sm"
+                  title="关闭上游 reasoning 模型的 think 能力. 适用于 qwen3 / deepseek-r1 等. 解决 thinking 死循环和首字延迟过长."
+                >
+                  <input
+                    type="checkbox"
+                    checked={disableThinking}
+                    onChange={(e) => setDisableThinking(e.target.checked)}
+                  />
+                  关闭 Think
+                </label>
+
                 {/* 保存到空间 */}
                 <div className="flex items-center gap-1 ml-auto">
                   <label className="text-label-sm text-on-surface-variant">问答存入</label>
@@ -796,6 +826,7 @@ function ChatContent() {
                   streamingMemories={chat.currentMemories}
                   streamingTrace={chat.currentTrace}
                   streamingThinking={chat.currentThinking}
+                  disableThinking={disableThinking}
                   onSave={onSaveMessage}
                   spaces={chat.spaces}
                 />

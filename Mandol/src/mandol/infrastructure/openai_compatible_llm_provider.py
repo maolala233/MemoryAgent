@@ -176,11 +176,39 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             choice = (raw.get("choices") or [])[0]
             msg = (choice.get("message") or {})
             content = msg.get("content")
+            reasoning = msg.get("reasoning") or msg.get("reasoning_content")
         except (KeyError, IndexError, TypeError):
             content = None
+            reasoning = None
 
         if not isinstance(content, str):
             content = ""
+        # ⭐ 兜底: gemma4:12b / qwen3.5 等 reasoning 模型可能把全部 token
+        # 花在 thinking 上, 导致 content 字段为空但 reasoning 有答案.
+        # 简单启发式: 取 reasoning 末尾作为 content (因为 LLM 总是先思考再
+        # 写答案, 答案通常在 reasoning 末尾), 并去除 markdown 列表前缀.
+        if not content.strip() and isinstance(reasoning, str) and reasoning.strip():
+            text = reasoning.strip()
+            # 截取最后一个清晰段落作为答案 (去掉 "Option N: ..." 这种思考片段)
+            import re as _re
+            paragraphs = [p.strip() for p in _re.split(r"\n\s*\n", text) if p.strip()]
+            answer = None
+            for p in reversed(paragraphs):
+                # 跳过纯思考片段 (以 * / - 开头 或包含 "Option")
+                if p.startswith(("*", "-", "•")) or "Option" in p[:30]:
+                    continue
+                # 跳过 "我需要思考..." 这种元说明
+                if p.startswith(("我", "让我", "Let me", "I need", "I should")):
+                    continue
+                answer = p
+                break
+            if not answer:
+                # 兜底: 直接取最后 500 字符
+                answer = text[-500:]
+            content = answer
+            if isinstance(raw, dict) and isinstance(raw.get("choices"), list) and raw["choices"]:
+                if isinstance(raw["choices"][0], dict):
+                    raw["choices"][0].setdefault("message", {})["__reasoning_fallback__"] = True
 
         raw_usage = raw.get("usage", {})
         if isinstance(raw_usage, dict) and raw_usage.get("total_tokens"):

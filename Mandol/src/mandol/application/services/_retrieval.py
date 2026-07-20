@@ -167,6 +167,11 @@ class MemoryRetrievalService:
                 top_k=max(1, int(top_k) * 3),
                 use_rerank=False,
             )
+            logger.warning(
+                "HOLISTIC_GROUP group=%s spaces=%s hits=%d uids=%s",
+                group_key, space_names, len(group_hits),
+                [str(h.unit.uid)[:50] for h in group_hits[:5]],
+            )
             for hit in group_hits:
                 uid = str(hit.unit.uid)
                 if uid not in seen:

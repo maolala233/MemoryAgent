@@ -5,16 +5,16 @@ strategies:
   keyword:
     enabled: true
     fts_table: memory_fts
-    limit: 20
+    limit: 30
   semantic:
     enabled: true
-    top_k: 20
-    min_score: 0.15
+    top_k: 30
+    min_score: 0.10  # 之前 0.15,降为 0.10 提升召回
   hybrid:
     enabled: true
-    keyword_weight: 0.55
-    semantic_weight: 0.45
-    limit: 20
+    keyword_weight: 0.4  # 之前 0.55,降为 0.4 提升语义权重
+    semantic_weight: 0.6
+    limit: 30
 
 cache:
   enabled: true

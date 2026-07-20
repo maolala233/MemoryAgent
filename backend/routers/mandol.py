@@ -45,7 +45,7 @@ from ..models.schemas import (
     UnitSpaceRequest,
 )
 from ..services.mandol_service import RELATIONSHIP_TYPES, VIEWS, mandol_service
-from ..utils.logger import warn
+from ..utils.logger import warn, info
 
 router = APIRouter(prefix="/api/mandol", tags=["mandol"])
 
@@ -685,3 +685,82 @@ def reconfigure() -> StatusResponse:
     if not ok:
         raise HTTPException(status_code=500, detail="重新配置失败")
     return StatusResponse(status="ok", message="Mandol 系统已重新配置")
+
+
+@router.post("/ingest-vault", response_model=StatusResponse)
+def ingest_vault(space_name: str = "default_base_memory",
+                 max_tokens: int = 250, overlap: int = 40) -> StatusResponse:
+    """一次性把 vault 目录所有 .md 分块后加入 Mandol 指定 space。
+
+    跳过已存在的 chunk uid。完成后重建 faiss 索引。
+    专用于修复 rescan 不推 Mandol 的历史遗漏。
+    """
+    _require_enabled()
+    from backend.config.settings import settings as _s
+    from backend.services.chunking_service import chunking_service
+    import re, time as _t
+
+    vault = _s.vault_dir
+    if not vault.exists():
+        raise HTTPException(status_code=404, detail=f"vault 目录不存在: {vault}")
+    md_files = sorted(vault.rglob("*.md"))
+    md_files = [p for p in md_files if not any(part.startswith(".") for part in p.parts)]
+    sm = mandol_service._system.semantic_map  # noqa: SLF001
+    sm.create_space(space_name)
+    existing = {str(u.uid) for u in sm.list_units() if str(u.uid).startswith("doc:")}
+    added = 0
+    skipped = 0
+    t0 = _t.time()
+    for p in md_files:
+        rel = p.relative_to(vault).as_posix()
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        if text.startswith("---"):
+            m = re.match(r"^---\n(.+?)\n---\n(.*)$", text, re.DOTALL)
+            if m:
+                text = m.group(2)
+        if not text.strip():
+            continue
+        try:
+            chunks = chunking_service.chunk_document(text, max_tokens=max_tokens, overlap=overlap)
+        except Exception:
+            chunks = []
+        if not chunks:
+            chunks = [type("C", (), {"text": text[:2000], "index": 0, "section": ""})()]
+        for c in chunks:
+            ctext = c.text if hasattr(c, "text") else c.get("text", "")
+            idx = c.index if hasattr(c, "index") else 0
+            sec = c.section if hasattr(c, "section") else ""
+            if not ctext.strip():
+                continue
+            uid_str = f"doc:{rel}:chunk:{idx}"
+            if uid_str in existing:
+                skipped += 1
+                continue
+            from mandol import MemoryUnit, Uid
+            unit = MemoryUnit(
+                uid=Uid(uid_str),
+                raw_data={"text_content": ctext},
+                metadata={"rel_path": rel, "chunk_index": idx, "section": sec, "source": "vault_ingest"},
+            )
+            try:
+                sm.add_unit(unit, space_names=[space_name], ensure_embedding=True)
+                added += 1
+            except Exception as e:
+                warn(f"ingest add_unit fail {uid_str}: {e}")
+    # 重建 faiss index
+    try:
+        sm.rebuild_index_from_store()
+    except Exception as e:
+        warn(f"ingest rebuild_index fail: {e}")
+    # 重建 space 关联
+    try:
+        mandol_service.rebuild_spaces_from_units()
+    except Exception as e:
+        warn(f"ingest rebuild_spaces fail: {e}")
+    return StatusResponse(
+        status="ok",
+        message=f"ingest done: files={len(md_files)} added={added} skipped={skipped} dur={_t.time()-t0:.1f}s",
+    )

@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     mandol_auto_save_interval: int = 300
 
     # ---- Mandol LLM（OpenAI 兼容）----
-    mandol_llm_model: str = "qwen3.5:9b"
+    mandol_llm_model: str = "gemma4:12b"
     mandol_llm_base_url: str = "http://localhost:11434/v1"
     mandol_llm_api_key: str = "ollama"
 
@@ -138,16 +138,16 @@ class Settings(BaseSettings):
     app_milvus_remote_enabled: bool = True
 
     # ---- Mandol 系统参数 ----
-    mandol_chunk_max_tokens: int = 512
+    mandol_chunk_max_tokens: int = 256  # 之前 512: 大块难以精确命中,降为 256 提升召回粒度
     mandol_session_time_gap_seconds: int = 1800
     mandol_session_check_interval: int = 20
     mandol_session_max_pending: int = 100
-    mandol_similarity_top_k: int = 5
-    mandol_similarity_threshold: float = 0.82
+    mandol_similarity_top_k: int = 15  # 之前 5: 召回太少,扩到 15
+    mandol_similarity_threshold: float = 0.55  # 之前 0.82: 阈值过高,降为 0.55
     mandol_similarity_recent_window: int = 10
-    mandol_bfs_expansion_per_seed: int = 3
-    mandol_bfs_expansion_hops: int = 1
-    mandol_max_context_units: int = 20
+    mandol_bfs_expansion_per_seed: int = 5  # 之前 3: 扩展更多
+    mandol_bfs_expansion_hops: int = 2  # 之前 1: 跨节点关联
+    mandol_max_context_units: int = 30  # 之前 20
     mandol_max_entities_per_llm: int = 50
     mandol_max_events_per_llm: int = 50
     mandol_promote_threshold: int = 100
