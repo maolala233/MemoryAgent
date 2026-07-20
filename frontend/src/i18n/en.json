@@ -13,7 +13,6 @@
     "causalChain": "Causal Chain",
     "chatWithAgent": "Chat with Agent",
     "importDocument": "Import Document",
-    "agents": "Agents",
     "settings": "Settings",
     "support": "Support",
     "newEntry": "New Entry"
@@ -172,13 +171,6 @@
     "importing": "Importing...",
     "importSuccess": "Import successful",
     "importFailed": "Import failed"
-  },
-  "agents": {
-    "title": "Agents",
-    "subtitle": "Manage your AI agents",
-    "createAgent": "Create Agent",
-    "noAgents": "No agents yet",
-    "noAgentsDescription": "Create your first agent to get started"
   },
   "settings": {
     "title": "Settings",

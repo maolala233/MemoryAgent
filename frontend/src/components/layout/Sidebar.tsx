@@ -23,7 +23,6 @@ export function Sidebar() {
     { label: "知识图谱", href: "/graph", icon: "account_tree" },
     { label: "记忆构建", href: "/build", icon: "construction" },
     { label: "文档导入", href: "/import", icon: "upload_file" },
-    { label: "Agent", href: "/agents", icon: "neurology" },
   ];
 
   const FOOTER_NAV: NavItem[] = [

@@ -13,7 +13,6 @@
     "causalChain": "因果链",
     "chatWithAgent": "智能对话",
     "importDocument": "导入文档",
-    "agents": "智能体",
     "settings": "设置",
     "support": "帮助",
     "newEntry": "新建记忆"
@@ -172,13 +171,6 @@
     "importing": "导入中...",
     "importSuccess": "导入成功",
     "importFailed": "导入失败"
-  },
-  "agents": {
-    "title": "智能体",
-    "subtitle": "管理您的 AI 智能体",
-    "createAgent": "创建智能体",
-    "noAgents": "暂无智能体",
-    "noAgentsDescription": "创建第一个智能体开始使用"
   },
   "settings": {
     "title": "设置",
