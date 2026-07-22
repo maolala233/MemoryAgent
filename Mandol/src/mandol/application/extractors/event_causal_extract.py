@@ -16,80 +16,80 @@ from ...ports.llm_provider import ChatMessage, LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Prompt for inferring causal relationships between events.
-EVENT_CAUSAL_EXTRACT_PROMPT = """You are a causal relationship analysis expert. Given a list of events from a conversation session, identify causal relationships where one event causes or influences another.
+# 推断事件之间因果关系的提示词
+EVENT_CAUSAL_EXTRACT_PROMPT = """你是一名因果关系分析专家。给定一个会话中的事件列表，识别其中存在因果关系的事件对（一个事件导致或影响另一个事件）。
 
-**CRITICAL INSTRUCTIONS:**
-- Output ONLY valid JSON format, no other text
-- Focus on clear cause-effect relationships
-- Cause must occur before effect chronologically
-- Confidence score: 0.0 (weak) to 1.0 (strong)
-- Only include relationships with confidence >= 0.6
-- Event signatures must exactly match the original event descriptions
-- Each event has a UID - use the UID for source tracking
+**关键指令：**
+- 仅输出合法 JSON，不要任何其他文字
+- 聚焦清晰的因果关系
+- 因必须按时间顺序发生在果之前
+- 置信度分数：0.0（弱）到 1.0（强）
+- 仅保留置信度 >= 0.6 的关系
+- 事件签名必须与原始事件描述完全一致
+- 每个事件有 UID —— 使用 UID 进行来源追踪
 
-**CAUSAL RELATIONSHIP TYPES TO CONSIDER:**
-- direct_causal: Event A directly caused Event B (e.g., "led to", "caused", "triggered")
-- indirect_causal: Event A contributed to or influenced Event B (e.g., "contributed to", "facilitated", "enabled")
-- conditional_causal: Event A caused Event B under specific conditions (e.g., "when X happened, A caused B")
-- temporal_causal: Event A preceded and caused Event B (e.g., "after", "following", "subsequently")
-- emotional_causal: An emotional state caused a behavior or decision (e.g., "fear led to", "excitement caused")
-- behavioral_causal: A decision or action caused an outcome (e.g., "decided to", "chose to", "action resulted in")
+**考虑的因果关系类型：**
+- direct_causal：A 直接导致 B（例如『导致了』、『引起了』、『触发了』）
+- indirect_causal：A 间接促成或影响 B（例如『有助于』、『推动了』、『使……成为可能』）
+- conditional_causal：A 在特定条件下导致 B（例如『当 X 发生时，A 导致 B』）
+- temporal_causal：A 在时间上先于并导致 B（例如『之后』、『随后』）
+- emotional_causal：情感状态导致行为或决策（例如『恐惧导致』、『兴奋引发』）
+- behavioral_causal：决策或行动导致结果（例如『决定……』、『选择……』、『行动结果』）
 
-**EVENTS TO ANALYZE:**
+**待分析事件：**
 {events_json}
 
-**REQUIRED OUTPUT FORMAT:**
+**要求的输出格式：**
 {{
   "causal_relationships": [
     {{
-      "cause_event": "string - exact event description",
-      "effect_event": "string - exact event description",
-      "causal_type": "string - one of: direct_causal, indirect_causal, conditional_causal, temporal_causal, emotional_causal, behavioral_causal",
-      "confidence_score": "float",
-      "rationale": "string - brief explanation in English",
-      "source_uids": ["string - UID of cause event", "string - UID of effect event"]
+      "cause_event": "字符串 - 因事件的描述原文",
+      "effect_event": "字符串 - 果事件的描述原文",
+      "causal_type": "字符串 - 只能是：direct_causal, indirect_causal, conditional_causal, temporal_causal, emotional_causal, behavioral_causal",
+      "confidence_score": "浮点数",
+      "rationale": "字符串 - 简要说明（中文）",
+      "source_uids": ["字符串 - 因事件 UID", "字符串 - 果事件 UID"]
     }}
   ]
 }}
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
-# Prompt for extracting event descriptions from conversation records.
-EVENT_EXTRACTION_PROMPT = """You are an event extraction expert. Given a list of memory records, identify and extract all meaningful events mentioned.
+# 从对话记录中抽取事件描述的提示词
+EVENT_EXTRACTION_PROMPT = """你是一名事件抽取专家。给定一组记忆记录，识别并抽取其中提到的所有有意义的事件。
 
-**EVENT TYPES TO EXTRACT:**
-- action_event: Specific actions taken or decisions made (e.g., "decided to migrate database", "cancelled the meeting")
-- state_change: Changes in status, condition, or situation (e.g., "server went down", "status changed to active")
-- communication_event: Exchanges of information (e.g., "sent email to team", "received feedback")
-- temporal_event: Time-bound occurrences (e.g., "every Monday", "during Q3", "after the release")
-- relationship_event: Events involving relationships (e.g., "joined the team", "left the company")
+**待抽取的事件类型：**
+- action_event：具体的动作或决策（例如『决定迁移数据库』、『取消了会议』）
+- state_change：状态、情况的变化（例如『服务器宕机』、『状态变更为激活』）
+- communication_event：信息交换（例如『给团队发邮件』、『收到反馈』）
+- temporal_event：有时间边界的事件（例如『每周一』、『Q3 期间』、『发布后』）
+- relationship_event：涉及关系的事件（例如『加入团队』、『离职』）
 
-**CRITICAL INSTRUCTIONS:**
-- Output ONLY valid JSON format, no other text
-- Extract events that are specific enough to be meaningful
-- Include timestamp when available
-- Each event must have a unique UID for tracking
-- Confidence score: 0.0 (weak) to 1.0 (strong)
+**关键指令：**
+- 仅输出合法 JSON，不要任何其他文字
+- 抽取要具体到有意义的实体
+- 尽量提供时间戳
+- 每个事件必须有唯一的 UID 用于追踪
+- 置信度分数：0.0（弱）到 1.0（强）
 
-**RECORDS TO ANALYZE:**
+**待分析记录：**
 {records_json}
 
-**REQUIRED OUTPUT FORMAT:**
+**要求的输出格式：**
 {{
   "events": [
     {{
-      "signature": "string - concise event description (max 100 chars)",
-      "text": "string - full event description",
-      "event_type": "string - one of: action_event, state_change, communication_event, temporal_event, relationship_event",
-      "timestamp": "string - when the event occurred if known",
-      "confidence": "float",
-      "uid": "string - unique identifier for this event"
+      "signature": "字符串 - 简明的事件描述（不超过 100 字）",
+      "text": "字符串 - 完整的事件描述",
+      "event_type": "字符串 - 只能是：action_event, state_change, communication_event, temporal_event, relationship_event",
+      "timestamp": "字符串 - 事件发生时间（若已知）",
+      "confidence": "浮点数",
+      "uid": "字符串 - 该事件的唯一标识"
     }}
   ]
 }}
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
 CAUSAL_TYPES = [
     "direct_causal",

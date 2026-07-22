@@ -187,17 +187,21 @@ class MemoryPersistenceService:
             engine = JsonPersistenceEngine(storage_path)
             engine.ensure_directories()
 
-            units = self._semantic_map.list_units()
-            spaces = self._semantic_map.list_spaces()
-            edges = self._extract_graph_edges()
-            sessions = self._session_manager.get_sessions()
-
             # 先把 write-back 缓冲的单元推到 Milvus(单元存储是 write-back 模式,
-            # 否则 Milvus 永远是空的,后续向量检索拿不到任何东西)
+            # 否则 list_units()/list_spaces() 可能只抓到 flush 前的旧快照。
             try:
                 self._semantic_map.get_store().flush()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Unit store flush before save failed: %s", exc)
+            try:
+                self._graph_store.flush()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Graph store flush before save failed: %s", exc)
+
+            units = self._semantic_map.list_units()
+            spaces = self._semantic_map.list_spaces()
+            edges = self._extract_graph_edges()
+            sessions = self._session_manager.get_sessions()
 
             engine.save_units(units)
             engine.save_spaces(spaces)
@@ -273,7 +277,30 @@ class MemoryPersistenceService:
 
             store = self._semantic_map.get_store()
             for unit in units:
-                store.upsert_units([unit])
+                # 尝试从图库或向量库中恢复 embedding，避免重启时调用 LLM 重新 embedding
+                try:
+                    existing = store.get_unit(unit.uid)
+                    if existing is not None and getattr(existing, "embedding", None) is not None:
+                        unit.embedding = existing.embedding
+                except Exception as exc:
+                    logger.debug("Failed to check existing unit for embedding: %s", exc)
+
+                # units.json 不持久化 embedding 字段(太大了),
+                # 如果没有从 store 恢复出来，才用 embedder 重算。
+                needs_embed = (unit.embedding is None)
+                try:
+                    self._semantic_map.upsert_unit(
+                        unit,
+                        ensure_embedding=needs_embed,
+                        rebuild_index_immediately=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("upsert_unit with embedding failed for %s: %s", unit.uid, exc)
+                    # 兜底: 至少把 unit 放进 store, 防止 list_units 拿不到
+                    try:
+                        store.upsert_units([unit])
+                    except Exception:  # noqa: BLE001
+                        pass
 
             for space in spaces:
                 store.upsert_spaces([space])
@@ -310,6 +337,7 @@ class MemoryPersistenceService:
             self._last_async_reasoning = last_async_reasoning
             self._async_check_scheduled = async_check_scheduled
 
+            self._restore_fact_lists_from_spaces()
             self._rebuild_vector_index(units)
 
             self._dirty = False
@@ -392,7 +420,7 @@ class MemoryPersistenceService:
 
         if root is not None:
             system._root = root
-        self._load(storage_path)
+        system._load(storage_path)
         return system
 
     def _extract_graph_edges(self) -> List[Tuple[str, str, str, Dict[str, Any]]]:
@@ -439,6 +467,23 @@ class MemoryPersistenceService:
         self._async_check_scheduled = False
 
         self._dirty = False
+
+    def _restore_fact_lists_from_spaces(self) -> None:
+        """Rebuild in-memory fact lists from persisted entity/event spaces."""
+        if self._all_entities is None or self._all_events is None:
+            return
+        try:
+            entity_space = self._naming.knowledge_entity(self._root)
+            event_space = self._naming.episodic_event(self._root)
+            entities = self._semantic_map.get_units_in_spaces([entity_space])
+            events = self._semantic_map.get_units_in_spaces([event_space])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to restore fact lists from spaces: %s", exc)
+            return
+        self._all_entities.clear()
+        self._all_entities.extend(entities)
+        self._all_events.clear()
+        self._all_events.extend(events)
 
     def _rebuild_vector_index(self, units: List[MemoryUnit]) -> None:
         items: List[Tuple[Uid, np.ndarray]] = []

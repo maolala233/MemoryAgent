@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "./Icon";
 
 interface ConfirmDialogProps {
@@ -10,6 +10,8 @@ interface ConfirmDialogProps {
   confirmLabel?: string;
   cancelLabel?: string;
   variant?: "default" | "danger";
+  /** 需要用户在输入框中输入的字符串（留空则不需要） */
+  requireText?: string;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -21,9 +23,16 @@ export function ConfirmDialog({
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   variant = "default",
+  requireText,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const [typed, setTyped] = useState("");
+
+  useEffect(() => {
+    if (open) setTyped("");
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -34,6 +43,8 @@ export function ConfirmDialog({
   }, [open, onCancel]);
 
   if (!open) return null;
+
+  const textMatched = !requireText || typed === requireText;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
@@ -62,9 +73,23 @@ export function ConfirmDialog({
           </h3>
         </div>
         {message && (
-          <p className="text-body-md text-on-surface-variant mb-6 pl-11">
+          <p className="text-body-md text-on-surface-variant mb-4 pl-11 whitespace-pre-line">
             {message}
           </p>
+        )}
+        {requireText && (
+          <div className="pl-11 mb-2">
+            <label className="block text-label-md text-on-surface-variant mb-1">
+              请输入 <code className="px-1 py-0.5 rounded bg-surface-container-high text-on-surface font-mono">{requireText}</code> 以确认操作
+            </label>
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              className="w-full px-3 py-2 rounded-lg border border-border bg-surface-container-low text-body-md focus:outline-none focus:border-primary"
+              autoFocus
+            />
+          </div>
         )}
         <div className="flex justify-end gap-2 mt-6">
           <button
@@ -75,8 +100,10 @@ export function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
+            disabled={!textMatched}
             className={[
-              "px-4 py-2 text-body-md font-bold text-white rounded-lg transition-opacity hover:opacity-90",
+              "px-4 py-2 text-body-md font-bold text-white rounded-lg transition-opacity",
+              textMatched ? "hover:opacity-90" : "opacity-40 cursor-not-allowed",
               variant === "danger" ? "bg-error" : "bg-primary",
             ].join(" ")}
           >

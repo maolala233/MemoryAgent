@@ -499,7 +499,10 @@ class MandolStatsResponse(BaseModel):
     entity_count: int = 0
     event_count: int = 0
     summary_count: int = 0
+    # 向后兼容: 顶层 = 三个 key (prompt/completion/total) 的总和
     token_usage: Dict[str, int] = Field(default_factory=dict)
+    # 新增: 按阶段拆分 (build / chat / total), 方便前端卡片区分
+    token_usage_by_phase: Dict[str, Dict[str, int]] = Field(default_factory=dict)
     dirty: bool = False
     error: Optional[str] = None
 

@@ -16,83 +16,83 @@ from ...ports.llm_provider import ChatMessage, LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Prompt for extracting relationships between known entities.
-ENTITY_RELATION_EXTRACT_PROMPT = """You are a professional entity relationship extraction expert. Given a list of entities from a conversation session, identify meaningful relationships between them.
+# 提取已知实体之间关系的提示词
+ENTITY_RELATION_EXTRACT_PROMPT = """你是一名专业的实体关系抽取专家。给定一个会话中出现的实体列表，识别它们之间有意义的关系。
 
-**CRITICAL INSTRUCTIONS:**
-- Output ONLY valid JSON format, no other text
-- Relationships should be semantic connections meaningful in context
-- Confidence score: 0.0 (weak) to 1.0 (strong)
-- Only include relationships with confidence >= 0.6
-- Entity texts must exactly match the original entity names
-- Each entity has a UID - use the UID for source tracking
+**关键指令：**
+- 仅输出合法 JSON，不要任何其他文字
+- 关系应是上下文中有意义的语义连接
+- 置信度分数：0.0（弱）到 1.0（强）
+- 仅保留置信度 >= 0.6 的关系
+- 实体文本必须与原始实体名完全一致
+- 每个实体有 UID —— 使用 UID 进行来源追踪
 
-**RELATION TYPES TO CONSIDER:**
-- Identity: is_a, works_as, role_is
-- Ownership: owns, belongs_to, contains
-- Location: located_at, lives_in, works_at, from
-- Temporal: happened_at, lasted, before, after
-- Participation: participated_in, experienced, completed
-- Emotional: likes, loves, hates, worries_about, supports
-- Causal: caused, because, therefore, affected, resulted_in
-- Social: friend_of, family_of, colleague_of, neighbor_of, partner_of
-- Learning/Work: studies, works_at, teaches, guides, collaborates_with
+**考虑的关系类型：**
+- 身份类：is_a、works_as、role_is（属于 / 担任 / 角色是）
+- 归属类：owns、belongs_to、contains（拥有 / 属于 / 包含）
+- 位置类：located_at、lives_in、works_at、from（位于 / 居住 / 工作于 / 来自）
+- 时间类：happened_at、lasted、before、after（发生于 / 持续 / 之前 / 之后）
+- 参与类：participated_in、experienced、completed（参与 / 经历 / 完成）
+- 情感类：likes、loves、hates、worries_about、supports（喜欢 / 爱 / 厌恶 / 担心 / 支持）
+- 因果类：caused、because、therefore、affected、resulted_in（导致 / 因为 / 因此 / 影响 / 引致）
+- 社交类：friend_of、family_of、colleague_of、neighbor_of、partner_of（朋友 / 家人 / 同事 / 邻居 / 伙伴）
+- 学习/工作类：studies、works_at、teaches、guides、collaborates_with（学习 / 工作于 / 教授 / 指导 / 协作）
 
-**ENTITIES TO ANALYZE:**
+**待分析实体：**
 {entities_json}
 
-**REQUIRED OUTPUT FORMAT:**
+**要求的输出格式：**
 {{
   "relationships": [
     {{
-      "head_entity": "string - exact entity text",
-      "tail_entity": "string - exact entity text",
-      "relation_type": "string - use relation type from the list above (e.g., works_as, located_at, likes)",
-      "confidence_score": "float",
-      "rationale": "string - brief explanation in English",
-      "source_uids": ["string - UID of head entity", "string - UID of tail entity"]
+      "head_entity": "字符串 - 实体原文",
+      "tail_entity": "字符串 - 实体原文",
+      "relation_type": "字符串 - 使用上述关系类型（如 works_as、located_at、likes）",
+      "confidence_score": "浮点数",
+      "rationale": "字符串 - 简要说明（中文）",
+      "source_uids": ["字符串 - 头实体的 UID", "字符串 - 尾实体的 UID"]
     }}
   ]
 }}
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
-# Prompt for extracting entities from raw conversation records.
-ENTITY_TYPES_EXTRACTION_PROMPT = """You are a professional entity extraction expert. Given a list of memory records, identify and extract all meaningful entities mentioned.
+# 从原始对话记录中抽取实体的提示词
+ENTITY_TYPES_EXTRACTION_PROMPT = """你是一名专业的实体抽取专家。给定一组记忆记录，识别并抽取其中提到的所有有意义的实体。
 
-**ENTITY TYPES TO EXTRACT:**
-- person: Specific individuals by name or clear reference (e.g., "John", "the doctor", "my manager")
-- organization: Companies, institutions, teams, groups (e.g., "Google", "the engineering team")
-- location: Places, venues, geographical references (e.g., "San Francisco", "the office", "meeting room")
-- concept: Abstract ideas, theories, principles (e.g., "machine learning", "agile methodology")
-- object: Physical or digital objects, tools, products (e.g., "the laptop", "the new API")
-- event: Specific occurrences, meetings, incidents (e.g., "the launch", "the Q3 meeting")
-- activity: Actions, processes, workflows (e.g., "code review", "data migration")
+**待抽取的实体类型：**
+- person：具体的个人（按姓名或明确指代，例如『张三』、『医生』、『我的经理』）
+- organization：公司、机构、团队、群组（例如『Google』、『工程团队』）
+- location：地点、场所、地理指代（例如『旧金山』、『办公室』、『会议室』）
+- concept：抽象概念、理论、原则（例如『机器学习』、『敏捷方法论』）
+- object：物理或数字对象、工具、产品（例如『笔记本电脑』、『新 API』）
+- event：具体发生的事、会议、事件（例如『发布会』、『Q3 会议』）
+- activity：动作、流程、工作流（例如『代码评审』、『数据迁移』）
 
-**CRITICAL INSTRUCTIONS:**
-- Output ONLY valid JSON format, no other text
-- Extract entities that are specific enough to be meaningful
-- Include context/description when available
-- Each entity must have a unique UID for tracking
-- Confidence score: 0.0 (weak) to 1.0 (strong)
+**关键指令：**
+- 仅输出合法 JSON，不要任何其他文字
+- 抽取要具体到有意义的实体
+- 尽量提供上下文/描述
+- 每个实体必须有唯一的 UID 用于追踪
+- 置信度分数：0.0（弱）到 1.0（强）
 
-**RECORDS TO ANALYZE:**
+**待分析记录：**
 {records_json}
 
-**REQUIRED OUTPUT FORMAT:**
+**要求的输出格式：**
 {{
   "entities": [
     {{
-      "text": "string - exact entity text as it appears",
-      "entity_type": "string - one of: person, organization, location, concept, object, event, activity",
-      "description": "string - brief context or description of the entity",
-      "confidence": "float",
-      "uid": "string - unique identifier for this entity (format: entity_{index})"
+      "text": "字符串 - 实体原文（按出现形式）",
+      "entity_type": "字符串 - 只能是：person, organization, location, concept, object, event, activity",
+      "description": "字符串 - 实体的简要上下文或描述（中文）",
+      "confidence": "浮点数",
+      "uid": "字符串 - 该实体的唯一标识（格式：entity_{{index}}）"
     }}
   ]
 }}
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
 RELATION_TYPES = [
     "is_a", "works_as", "role_is",

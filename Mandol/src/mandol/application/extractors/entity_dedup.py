@@ -21,31 +21,37 @@ from ...ports.llm_provider import ChatMessage, LLMProvider
 
 logger = logging.getLogger(__name__)
 
-ENTITY_DEDUP_SYSTEM_PROMPT = """You are a professional entity standardization expert. Identify different expressions pointing to the same real entity.
+ENTITY_DEDUP_SYSTEM_PROMPT = """你是一名专业的实体标准化专家，负责识别指向同一真实实体的不同表述，并把候选实体合并为统一的标准实体。
 
-Entity candidate list:
+候选实体列表：
 {entity_list}
 
-Output JSON:
-{
+输出 JSON：
+{{
     "merged_entities": [
-        {
-            "canonical_form": "Standardized entity name",
-            "entity_type": "Unified entity type",
+        {{
+            "canonical_form": "标准化后的实体名（中文优先，保留原文术语）",
+            "entity_type": "统一的实体类型（person/organization/location/concept/object/event/activity 等）",
             "confidence": 0.95,
             "source_entities": [1, 3, 5],
-            "aliases": ["Variant 1", "Variant 2"],
+            "aliases": ["变体 1", "变体 2", "缩写", "别称"],
             "sessions": ["session_1", "session_3"],
-            "reasoning": "Merge reasoning"
-        }
+            "reasoning": "合并理由（用与候选列表相同的语言，中文为主）"
+        }}
     ]
-}
+}}
 
-Principles:
-- Same entity, different expressions → Merge
-- Different entities, similar expressions → Do NOT merge
-- Preserve aliases and compositional relationships
-- Output only valid JSON"""
+合并原则：
+- 同一实体的不同表述（含缩写、别名、错别字、英文/中文翻译）→ 合并
+- 不同实体但表述相似 → 禁止合并
+- 保留别名与组合关系（不要把包含关系的实体误合并）
+- 仅输出合法 JSON，不要 markdown 代码块，不要额外说明
+
+注意通用语言现象：
+- 缩写/全称（如『科创e贷』与『科技创新型小微企业贷款』）通常指同一实体，应合并
+- 别名/简称/昵称统一合并到 canonical_form
+- 中英翻译（如『客户经理 RM』与『客户经理』）按同一实体处理
+- 同一组织在不同上下文的子部门应保留为独立实体，不与上级合并"""
 
 
 @dataclass

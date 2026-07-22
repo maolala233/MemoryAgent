@@ -30,37 +30,37 @@ INSIGHT_TYPES = [
     "risk_warnings",
 ]
 
-GLOBAL_INSIGHT_MERGE_PROMPT = """You are an insight integration expert. Merge new session insights into existing global insights to maintain a coherent, non-redundant global understanding.
+GLOBAL_INSIGHT_MERGE_PROMPT = """你是一名洞察整合专家。请将新会话的洞察合并到现有全局洞察中，以保持连贯、不冗余的全局理解。
 
-**Step 1: Thinking Process (no need to reflect in final output)**
-1. Compare existing global insights with new session insights
-2. Identify which insights are truly new vs overlapping
-3. Merge similar insights while preserving diversity
-4. Prioritize high-value insights across all types
+**第 1 步：思考过程（最终输出无需反映）**
+1. 比较现有全局洞察与新会话洞察
+2. 识别哪些洞察是真正新增的，哪些是重叠的
+3. 合并相似洞察，同时保留多样性
+4. 在所有类型中优先保留高价值洞察
 
-**Step 2: Final Output**
+**第 2 步：最终输出**
 
-Merge rules:
-1. Preserve genuinely important global insights even if old
-2. Merge overlapping or redundant insights into more comprehensive ones
-3. Add genuinely new insights from new sessions
-4. Maintain diversity - don't over-merge everything into few points
-5. Keep insight text concise but informative
+合并规则：
+1. 即使是旧的全局洞察中真正重要的也要保留
+2. 将重叠或冗余的洞察合并为更全面的洞察
+3. 加入新会话中真正新增的洞察
+4. 保持多样性，不要把所有内容都合并为少数几点
+5. 洞察文本要简洁但信息丰富
 
-Please return the merged global insight in the following JSON format:
+请按以下 JSON 格式返回合并后的全局洞察：
 {{
-    "key_source_session_ids": ["List of session IDs that contributed to this global insight"],
+    "key_source_session_ids": ["贡献此全局洞察的会话 ID 列表"],
     "insights": {{
-        "pattern_recognition": ["Cross-session patterns and trends identified"],
-        "causal_relationships": ["Discovered causal relationship chains"],
-        "predictive_insights": ["Predictions and trend judgments based on patterns"],
-        "behavioral_characteristics": ["Deep behavioral characteristics"],
-        "optimization_recommendations": ["Specific improvement suggestions"],
-        "risk_warnings": ["Potential problems and risk points"]
+        "pattern_recognition": ["识别出的跨会话模式与趋势"],
+        "causal_relationships": ["发现的因果关系链"],
+        "predictive_insights": ["基于模式的预测与趋势判断"],
+        "behavioral_characteristics": ["深层行为特征"],
+        "optimization_recommendations": ["具体改进建议"],
+        "risk_warnings": ["潜在问题与风险点"]
     }}
 }}
 
-Generate ONLY valid JSON, without markdown code fences. All textual content within the JSON must be in English."""
+仅输出合法 JSON，不要 markdown 代码块。所有 JSON 内的文本内容请使用中文。"""
 
 
 @dataclass
@@ -203,7 +203,7 @@ All contributing session IDs: {self._global_insight.key_source_session_ids + [se
             self._global_insight = self._parse_merge_response(
                 response.content, session_id
             )
-        except (json.JSONDecodeError, ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        except (json.JSONDecodeError, ValueError, ConnectionError, TimeoutError, OSError, RuntimeError, AttributeError) as e:
             logger.error("Global insight merge failed: %s, using fallback merge", e)
             self._merge_insights_fallback(session_id, session_insight)
 
@@ -214,6 +214,14 @@ All contributing session IDs: {self._global_insight.key_source_session_ids + [se
     ) -> GlobalInsightResult:
         """Parse the LLM merge response and update the global insight."""
         data = json.loads(strip_json_fences(response))
+
+        # 兜底：若 LLM 返回的不是 dict（例如返回 list），视为解析失败，
+        # 抛出 ValueError 让上层 except 走到 fallback 路径。
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"merge response is not a dict (got {type(data).__name__}): "
+                f"{str(data)[:200]}"
+            )
 
         key_source_sessions = data.get("key_source_session_ids", [])
         if not isinstance(key_source_sessions, list):

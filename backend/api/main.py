@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from ..config.settings import apply_env_overrides, settings
+# 进程启动时把项目根 .env 加载到 os.environ,
+# 这样 Mandol / Milvus / 其它通过 os.getenv() 读配置的子模块
+# (例如 OpenAICompatibleEmbeddingProvider 用 token_env 取 API key) 也能拿到值。
+# pydantic-settings 只把 .env 装载到 Settings 模型,不会写入 os.environ。
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / ".env", override=False)
+
+from ..config.settings import apply_env_overrides, settings  # noqa: E402
 from ..routers import agents, chat, documents, mandol, memory, search, stats
 from ..routers import settings as settings_router
 from ..routers import llm as llm_router

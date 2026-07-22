@@ -3,91 +3,96 @@
 # LLM prompt for extracting causal relationships between event pairs.
 # Inputs: dialogue text and extracted events with their UIDs.
 # Output: JSON with causal_relations list (cause_event, effect_event, type, confidence).
-EVENT_CAUSAL_PROMPT = """You are an expert Knowledge Graph Engineer.
+#
+# 本提示为通用中文版：抽取因果关系时支持中英文因果连接词（因为、由于、导致、引起、促使、从而、因此、因为…所以…、由于…因此…、if…then…）。
 
-### Context
-**Dialogue**:
+EVENT_CAUSAL_PROMPT = """你是一名资深知识图谱工程师，专长于事件间因果关系抽取。
+
+### 背景
+**当前会话文本**:
 {dialogue_context}
 
-**Current Session Events**:
+**当前会话事件**:
 {current_events}
 
-### Instructions
+### 任务
 
-Extract causal relationships between events.
-- A CAUSES B: event A directly causes event B
-- Consider temporal order: cause should happen before effect
-- Look for explicit causal language: "because", "due to", "led to", "resulted in", "caused"
+抽取事件间的因果关系：
+- A **导致** B：事件 A 直接引起事件 B
+- 考虑时序：因在前、果在后
+- 留意中英文因果连接词：
+  - 中文：因为、由于、导致、引起、促使、从而、因此、所以、使得、造成、引发、故、于是
+  - 英文：because、due to、led to、resulted in、caused、hence、therefore、so、consequently
 
-### Few-Shot Examples
+### 少量示例
 
-**Example 1: Explicit Causation**
-Dialogue: "The heavy rain caused severe flooding in the area."
-Current Events: [{{"id": "event:heavy_rain", "name": "heavy rain"}}, {{"id": "event:flooding", "name": "flooding"}}]
-Output:
+**示例 1：显式因果**
+文本: "暴雨导致该地区发生了严重的洪涝。"
+当前事件: [{{"id": "event:heavy_rain", "name": "暴雨"}}, {{"id": "event:flooding", "name": "洪涝"}}]
+输出:
 {{
     "causal_relations": [
         {{
             "cause_event": "event:heavy_rain",
             "effect_event": "event:flooding",
             "confidence": 0.95,
-            "reasoning": "The dialogue explicitly states that heavy rain caused flooding"
+            "reasoning": "文本明确说暴雨导致洪涝"
         }}
     ]
 }}
 
-**Example 2: Implicit Causation**
-Dialogue: "John missed the deadline. He had to work overtime to catch up."
-Current Events: [{{"id": "event:missed_deadline", "name": "missed deadline"}}, {{"id": "event:work_overtime", "name": "work overtime"}}]
-Output:
+**示例 2：隐式因果**
+文本: "小李错过了截止日期。他不得不加班赶进度。"
+当前事件: [{{"id": "event:missed_deadline", "name": "错过截止日期"}}, {{"id": "event:work_overtime", "name": "加班赶进度"}}]
+输出:
 {{
     "causal_relations": [
         {{
             "cause_event": "event:missed_deadline",
             "effect_event": "event:work_overtime",
             "confidence": 0.85,
-            "reasoning": "Missing the deadline caused John to work overtime to catch up"
+            "reasoning": "错过截止日期导致小李不得不加班"
         }}
     ]
 }}
 
-**Example 3: No Causal Relation**
-Dialogue: "John went to the store. Mary read a book."
-Current Events: [{{"id": "event:store_visit", "name": "store visit"}}, {{"id": "event:reading", "name": "reading"}}]
-Output:
-{{
-    "causal_relations": []
-}}
-
-**Example 4: Chain of Events**
-Dialogue: "The server crashed due to high traffic. This caused the website to go down, and users couldn't access their accounts."
-Current Events: [{{"id": "event:server_crash", "name": "server crash"}}, {{"id": "event:website_down", "name": "website down"}}, {{"id": "event:access_failure", "name": "access failure"}}]
-Output:
+**示例 3：因果链**
+文本: "由于访问量激增，服务器宕机。这导致网站无法访问，进而用户无法登录账号。"
+当前事件: [{{"id": "event:server_crash", "name": "服务器宕机"}}, {{"id": "event:website_down", "name": "网站无法访问"}}, {{"id": "event:login_failure", "name": "用户无法登录"}}]
+输出:
 {{
     "causal_relations": [
         {{
             "cause_event": "event:server_crash",
             "effect_event": "event:website_down",
             "confidence": 0.95,
-            "reasoning": "Server crash caused website to go down"
+            "reasoning": "服务器宕机导致网站无法访问"
         }},
         {{
             "cause_event": "event:website_down",
-            "effect_event": "event:access_failure",
+            "effect_event": "event:login_failure",
             "confidence": 0.90,
-            "reasoning": "Website being down caused users to not access accounts"
+            "reasoning": "网站无法访问导致用户无法登录"
         }}
     ]
 }}
 
-### Output Format (JSON only)
+**示例 4：无因果关系**
+文本: "小李去商店买东西。小王在看书。"
+当前事件: [{{"id": "event:store_visit", "name": "去商店"}}, {{"id": "event:reading", "name": "看书"}}]
+输出:
+{{
+    "causal_relations": []
+}}
+
+### 输出格式（仅 JSON）
 {{
     "causal_relations": [
         {{
             "cause_event": "event:cause_id",
             "effect_event": "event:effect_id",
             "confidence": 0.85,
-            "reasoning": "Why this causal relationship exists"
+            "reasoning": "因果关系存在的原因"
         }}
     ]
 }}

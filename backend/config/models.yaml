@@ -1,5 +1,5 @@
 # LLM provider configuration
-default_provider: mock
+default_provider: ollama
 
 providers:
   mock:
@@ -10,7 +10,7 @@ providers:
   ollama:
     type: ollama
     base_url: ${OLLAMA_BASE_URL:http://localhost:11434}
-    model: ${OLLAMA_MODEL:llama3.1}
+    model: ${OLLAMA_MODEL:qwen3:8b}
     timeout: 120
     temperature: 0.7
     max_tokens: 2048
@@ -24,6 +24,6 @@ providers:
     max_tokens: 2048
 
 embedding:
-  provider: ${EMBEDDING_PROVIDER:mock}
-  model: ${EMBEDDING_MODEL:nomic-embed-text}
-  dim: ${EMBEDDING_DIM:384}
+  provider: ${EMBEDDING_PROVIDER:vllm}
+  model: ${EMBEDDING_MODEL:bge-m3}
+  dim: ${EMBEDDING_DIM:1024}

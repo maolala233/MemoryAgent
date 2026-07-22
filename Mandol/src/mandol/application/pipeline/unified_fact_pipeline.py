@@ -931,12 +931,15 @@ class UnifiedFactPipeline:
         context_label: str = "",
         max_tokens: Optional[int] = None,
     ) -> dict:
+        # 强制开启 JSON 输出模式 (Ollama / vLLM / OpenAI 兼容服务均支持),
+        # 避免模型先做 CoT 思考再回答, 减少 "JSON parse failed" 重试。
         return retry_llm_json_call(
             self._llm,
             [{"role": "user", "content": prompt}],
             parse_json_response,
             temperature=self._temperature,
             max_tokens=max_tokens or self._MAX_OUTPUT_TOKENS,
+            response_format={"type": "json_object"},
             context_label=context_label,
         )
 

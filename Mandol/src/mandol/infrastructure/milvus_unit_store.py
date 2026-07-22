@@ -9,6 +9,7 @@ on explicit flush() calls.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
@@ -18,6 +19,8 @@ from ..domain.memory_unit import MemoryUnit
 from ..domain.types import SpaceName, Uid
 from ..ports.unit_store import UnitStore
 from .config import MilvusConfig
+
+logger = logging.getLogger(__name__)
 
 
 class MilvusUnitStore(UnitStore):
@@ -83,12 +86,37 @@ class MilvusUnitStore(UnitStore):
 
         Schema: uid (VARCHAR, 512, primary key) + embedding (FLOAT_VECTOR).
         HNSW uses Inner Product (IP) for cosine similarity on normalized vectors.
+
+        如果集合已存在但 dim 与当前 self._dim 不一致(通常是历史遗留
+        的不同 embedder 维度),自动 drop 重建,避免 upsert 报
+        "the length(X) of float data should divide the dim(Y)"。
         """
         assert self._client is not None
         from pymilvus import DataType
 
         if self._client.has_collection(self._cfg.collection):
-            return
+            try:
+                desc = self._client.describe_collection(self._cfg.collection)
+                existing_dim = None
+                for f in desc.get("fields", []):
+                    if f.get("name") == "embedding":
+                        existing_dim = int(f.get("params", {}).get("dim", 0))
+                        break
+                if existing_dim and existing_dim != self._dim:
+                    logger.warning(
+                        "Milvus collection '%s' dim=%d != current self._dim=%d; "
+                        "dropping & recreating to match current embedder",
+                        self._cfg.collection, existing_dim, self._dim,
+                    )
+                    self._client.drop_collection(self._cfg.collection)
+                else:
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("describe_collection failed, will recreate: %s", exc)
+                try:
+                    self._client.drop_collection(self._cfg.collection)
+                except Exception:
+                    pass
 
         schema = self._client.create_schema(auto_id=False, enable_dynamic_field=True)
         schema.add_field(field_name="uid", datatype=DataType.VARCHAR, is_primary=True, max_length=512)
@@ -108,6 +136,7 @@ class MilvusUnitStore(UnitStore):
             index_params=index_params,
             consistency_level="Strong",
         )
+        logger.info("Created Milvus collection '%s' with dim=%d", self._cfg.collection, self._dim)
 
     def upsert_units(self, units: Sequence[MemoryUnit]) -> None:
         for u in units:
@@ -207,18 +236,30 @@ class MilvusUnitStore(UnitStore):
         assert self._client is not None
 
         if self._deleted_units:
-            expr = "uid in [" + ",".join([json.dumps(str(u)) for u in self._deleted_units]) + "]"
-            self._client.delete(collection_name=self._cfg.collection, filter=expr)
+            try:
+                expr = "uid in [" + ",".join([json.dumps(str(u)) for u in self._deleted_units]) + "]"
+                self._client.delete(collection_name=self._cfg.collection, filter=expr)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Milvus delete failed: %s", exc)
+                raise
             self._deleted_units.clear()
 
         if self._dirty_units:
             rows = []
+            skipped_dim = 0
+            skipped_no_emb = 0
             for u in self._dirty_units.values():
                 emb = u.embedding
                 if emb is None:
+                    skipped_no_emb += 1
                     continue
                 v = np.asarray(emb, dtype=np.float32).reshape(-1)
                 if v.shape[0] != self._dim:
+                    skipped_dim += 1
+                    logger.warning(
+                        "Skipping unit %s: embedding dim=%d != self._dim=%d",
+                        u.uid, v.shape[0], self._dim,
+                    )
                     continue
                 row = {
                     "uid": str(u.uid),
@@ -228,7 +269,21 @@ class MilvusUnitStore(UnitStore):
                 }
                 rows.append(row)
             if rows:
-                self._client.upsert(collection_name=self._cfg.collection, data=rows)
+                try:
+                    self._client.upsert(collection_name=self._cfg.collection, data=rows)
+                    logger.info("Milvus upserted %d units (skipped: no_emb=%d dim_mismatch=%d)",
+                                len(rows), skipped_no_emb, skipped_dim)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "Milvus upsert failed (rows=%d, skipped: no_emb=%d dim_mismatch=%d): %s",
+                        len(rows), skipped_no_emb, skipped_dim, exc,
+                    )
+                    raise
+            else:
+                logger.info(
+                    "Milvus flush: 0 rows to upsert (skipped: no_emb=%d dim_mismatch=%d)",
+                    skipped_no_emb, skipped_dim,
+                )
             self._dirty_units.clear()
 
     def clear(self) -> None:

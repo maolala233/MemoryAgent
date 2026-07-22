@@ -174,12 +174,20 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
                         mandol_synced += 1
         except Exception as exc:
             warn(f"Save failed for {f.rel_path}: {exc}")
-    # 4) 触发高阶记忆构建
+    # 4) 触发高阶记忆构建（异步,不阻塞 /save 响应）
+    #    前端通过 /api/mandol/build-status 轮询进度
     if req.build_mandol and mandol_synced > 0:
         from ..services.mandol_service import mandol_service
         if mandol_service.is_enabled:
             try:
-                mandol_service.build_high_level(mode="auto")
+                # 先 flush 一次,确保新加的原始 chunk 已经落库 Milvus,
+                # 避免 build 失败时丢数据 / 用户看不到向量
+                try:
+                    mandol_service.flush()
+                except Exception as exc:
+                    warn(f"Save 后 flush Milvus 失败: {exc}")
+                # 直接走后台线程,不再阻塞 1-3 分钟
+                mandol_service.build_high_level_async(mode="auto")
             except Exception as exc:
                 warn(f"Build high level after import failed: {exc}")
             # 5) 自动后台保存 snapshot（避免阻塞）
@@ -188,30 +196,36 @@ def save(file_id: str, req: SaveRequest) -> SaveResponse:
             except Exception as exc:
                 warn(f"自动 save snapshot 失败: {exc}")
 
-    # 5) 兜底 LLM 实体抽取（当 build_high_level 没产出时主动触发）
+    # 5) 兜底 LLM 实体抽取（异步执行,不阻塞 /save 响应）
     extraction_info: Optional[Dict[str, Any]] = None
     if req.build_mandol and mandol_synced > 0:
         try:
             from ..services.entity_extractor import entity_extractor
-            extraction_info = entity_extractor.extract_and_store(
-                text=info.get("text", ""),
-                source_doc=info.get("filename", ""),
-                project_id=req.project_id,
-            )
-            # 如果兜底抽取出了内容，再补一次 build + save
-            if extraction_info and extraction_info.get("status") == "ok":
-                from ..services.mandol_service import mandol_service
-                if mandol_service.is_enabled:
-                    try:
-                        mandol_service.build_high_level(mode="auto")
-                    except Exception as exc:
-                        warn(f"兜底抽取后 build_high_level 失败: {exc}")
-                    try:
-                        mandol_service.save()
-                    except Exception as exc:
-                        warn(f"兜底抽取后 save 失败: {exc}")
+            # 直接后台线程跑,避免 /save 长时间阻塞
+            import threading as _th
+            def _do_extract() -> None:
+                try:
+                    info_inner = entity_extractor.extract_and_store(
+                        text=info.get("text", ""),
+                        source_doc=info.get("filename", ""),
+                        project_id=req.project_id,
+                    )
+                    if info_inner and info_inner.get("status") == "ok":
+                        from ..services.mandol_service import mandol_service as _ms
+                        if _ms.is_enabled:
+                            try:
+                                _ms.build_high_level(mode="auto")
+                            except Exception as exc:  # noqa: BLE001
+                                warn(f"兜底抽取后 build_high_level 失败: {exc}")
+                            try:
+                                _ms.save()
+                            except Exception as exc:  # noqa: BLE001
+                                warn(f"兜底抽取后 save 失败: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    warn(f"后台 LLM 实体抽取失败: {exc}")
+            _th.Thread(target=_do_extract, daemon=True).start()
         except Exception as exc:
-            warn(f"LLM 实体抽取失败: {exc}")
+            warn(f"LLM 实体抽取派发失败: {exc}")
 
     db.audit("import", file_id, f"saved={len(saved_paths)}, mandol_synced={mandol_synced}")
     return SaveResponse(

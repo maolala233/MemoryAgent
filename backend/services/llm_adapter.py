@@ -72,6 +72,29 @@ class OllamaEmbedding(EmbeddingProvider):
             return resp.json().get("embedding", [])
 
 
+class VllmOpenAIEmbedding(EmbeddingProvider):
+    """OpenAI-compatible embeddings (e.g. vllm at port 8101)."""
+
+    def __init__(self, base_url: str, model: str, dim: int) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self._dim = dim
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    async def embed(self, text: str) -> List[float]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/embeddings",
+                json={"input": text, "model": self.model},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["data"][0]["embedding"]
+
+
 class OpenAIEmbedding(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = "text-embedding-3-small") -> None:
         self.api_key = api_key
@@ -93,6 +116,10 @@ def get_embedding_provider() -> EmbeddingProvider:
     provider = settings.embedding_provider.lower()
     if provider == "ollama":
         return OllamaEmbedding(settings.ollama_base_url, settings.embedding_model)
+    if provider == "vllm":
+        # 本地 vllm 启动的 OpenAI 兼容 embedding 服务 (默认 8101 端口)
+        base = settings.embedding_remote_base_url or "http://localhost:8101/v1"
+        return VllmOpenAIEmbedding(base, settings.embedding_model, settings.embedding_dim)
     if provider == "openai":
         if not settings.openai_api_key:
             warn("OpenAI embedding requested but no API key; falling back to mock")

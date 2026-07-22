@@ -110,6 +110,8 @@ def stats_quick() -> dict:
         "event_count": data.get("event_count", 0),
         "summary_count": data.get("summary_count", 0),
         "dirty": data.get("dirty", False),
+        # Token 用量取自 _compute_stats 内的进程内计数器（O(1)），不会拉慢首屏
+        "token_usage": data.get("token_usage", {}),
     }
 
 
@@ -496,6 +498,33 @@ def build_high_level(req: BuildRequest) -> BuildReportResponse:
     return BuildReportResponse(**data)
 
 
+@router.get("/build-status")
+def build_status() -> dict:
+    """查询高阶记忆构建的实时状态（供前端轮询）。
+
+    返回字段:
+      - status: idle | running | completed | failed
+      - message: 当前阶段的中文描述
+      - started_at / finished_at: 时间戳
+      - elapsed_seconds: 运行时长
+      - result: 最近一次构建的最终报告
+    """
+    _require_enabled()
+    return mandol_service.build_status()
+
+
+@router.post("/build-async")
+def build_high_level_async(req: BuildRequest) -> dict:
+    """异步触发高阶记忆构建，立刻返回当前状态。
+
+    实际工作在后台线程里跑；前端通过 /api/mandol/build-status 轮询进度。
+    """
+    _require_enabled()
+    return mandol_service.build_high_level_async(
+        mode=req.mode, skip_summary=req.skip_summary,
+    )
+
+
 @router.post("/merge/entities", response_model=MergeResponse)
 def merge_entities() -> MergeResponse:
     """跨会话实体合并。"""
@@ -528,6 +557,28 @@ def save_snapshot_status() -> dict:
     """查询最近一次 snapshot 保存状态。"""
     _require_enabled()
     return mandol_service.save_status()
+
+
+@router.get("/token-usage")
+def get_token_usage() -> dict:
+    """返回跨会话累计 token 用量 (build / chat / total)。
+
+    与 /stats/quick 内嵌的 token_usage 一致, 但作为独立 endpoint 方便前端调试/刷新。
+    数值持久化到 token_usage.json, 重启不丢。
+    """
+    _require_enabled()
+    return {
+        "enabled": True,
+        "token_usage": mandol_service.get_cumulative_token_usage(),
+    }
+
+
+@router.post("/token-usage/reset", response_model=StatusResponse)
+def reset_token_usage() -> StatusResponse:
+    """清零跨会话 token 累计 (前端「重置用量」按钮 / 调试)。"""
+    _require_enabled()
+    mandol_service.reset_cumulative_token_usage()
+    return StatusResponse(status="ok", message="token 用量已清零")
 
 
 @router.get("/external-store-status")
@@ -664,6 +715,115 @@ def flush() -> StatusResponse:
     _require_enabled()
     _safe_call(mandol_service.flush)
     return StatusResponse(status="flushed")
+
+
+# ─── 数据管理：细粒度清空接口（仪表盘使用）───────────────────────────
+def _clear_resp(data: dict) -> StatusResponse:
+    if data.get("error"):
+        raise HTTPException(status_code=400, detail=data["error"])
+    return StatusResponse(status="cleared", message=str(data.get("detail", data)))
+
+
+@router.post("/clear-units", response_model=StatusResponse)
+def clear_units() -> StatusResponse:
+    """仅清空记忆单元（Milvus 向量 + Mandol 内存中单元 + Neo4j 关系）；
+    实体 / 事件节点保留。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_units())
+
+
+@router.post("/clear-spaces", response_model=StatusResponse)
+def clear_spaces() -> StatusResponse:
+    """仅清空记忆空间。仅在记忆单元为 0 时允许执行。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_spaces())
+
+
+@router.post("/clear-entities", response_model=StatusResponse)
+def clear_entities() -> StatusResponse:
+    """仅清空 Neo4j 中的实体节点 + Mandol 内部实体集合。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_entities())
+
+
+@router.post("/clear-events", response_model=StatusResponse)
+def clear_events() -> StatusResponse:
+    """仅清空 Neo4j 中的事件节点 + Mandol 内部事件集合。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_events())
+
+
+@router.post("/clear-neo4j", response_model=StatusResponse)
+def clear_neo4j() -> StatusResponse:
+    """清空整个 Neo4j 图（节点 + 关系）。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_neo4j_only())
+
+
+@router.post("/clear-milvus", response_model=StatusResponse)
+def clear_milvus() -> StatusResponse:
+    """清空 Milvus 向量集合。"""
+    _require_enabled()
+    return _clear_resp(mandol_service.clear_milvus_only())
+
+
+@router.post("/clear-summaries", response_model=StatusResponse)
+def clear_summaries() -> StatusResponse:
+    """剥离 vault 文档 frontmatter 中的 summary 字段。"""
+    return _clear_resp(mandol_service.clear_summaries())
+
+
+@router.post("/clear-base-memories", response_model=StatusResponse)
+def clear_base_memories() -> StatusResponse:
+    """删除 data/vault/imports/ 下的所有解析文件。"""
+    return _clear_resp(mandol_service.clear_base_memories())
+
+
+@router.post("/clear-everything", response_model=StatusResponse)
+def clear_everything() -> StatusResponse:
+    """清空所有数据: Mandol 记忆 + Neo4j + Milvus + 基础记忆文件 + 摘要。
+
+    改为后台线程异步执行, 立即返回 status=running,
+    实际进度通过 /api/mandol/clear-status 轮询。
+    修复: 同步执行需要 30+ 秒, 前端一直转圈像卡死。
+    """
+    _require_enabled()
+    data = mandol_service.clear_all_async()
+    if data.get("error"):
+        raise HTTPException(status_code=500, detail=data["error"])
+    return StatusResponse(
+        status=data.get("status", "running"),
+        message=data.get("message", "清空任务已启动, 后台执行中…"),
+    )
+
+
+@router.get("/clear-status")
+def clear_status() -> dict:
+    """查询清空任务的实时状态(供前端轮询)。"""
+    _require_enabled()
+    return mandol_service.clear_status()
+
+
+@router.post("/clear-all", response_model=StatusResponse)
+def clear_all() -> StatusResponse:
+    """清空所有 Mandol 记忆数据：Neo4j 图 + Milvus 向量 + 本地快照 + 内存状态。
+
+    用于在 prompt / embedding / 配置重大变更后彻底重建。
+    完成后系统是空的，需重新调用 /ingest-vault + /build 才能继续问答。
+    """
+    _require_enabled()
+    data = _safe_call(mandol_service.clear_all)
+    if data.get("error"):
+        raise HTTPException(status_code=500, detail=data["error"])
+    return StatusResponse(
+        status="cleared",
+        message=(
+            f"neo4j={'ok' if data.get('neo4j_cleared') else 'fail'} "
+            f"milvus={'ok' if data.get('milvus_cleared') else 'fail'} "
+            f"snapshot={'ok' if data.get('snapshot_removed') else 'fail'} "
+            f"reinit={'ok' if data.get('system_reinitialized') else 'fail'}"
+        ),
+    )
 
 
 @router.post("/reembed-all")

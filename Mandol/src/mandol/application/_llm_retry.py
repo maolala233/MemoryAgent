@@ -24,8 +24,6 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_RETRY_DELAY = 1.0
 
 # Regex patterns for JSON cleaning
-# Single-line comments: // ... or # ...
-_RE_SINGLE_LINE_COMMENT = re.compile(r"(?<!:)//.*$|(?<!:)#.*$", re.MULTILINE)
 # Multi-line comments: /* ... */
 _RE_MULTI_LINE_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 # Trailing commas before ] or }
@@ -35,6 +33,72 @@ _RE_MD_FENCE = re.compile(r"```(?:json|JSON)?\s*")
 # Locate the first JSON object or array
 _RE_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 _RE_JSON_ARRAY = re.compile(r"\[.*\]", re.DOTALL)
+
+
+def _extract_balanced_json(text: str) -> Optional[str]:
+    """按括号配对从 text 中提取第一个完整的 JSON 对象或数组。
+
+    处理"模型先做 CoT 推理再给 JSON"的情况:
+    ```text
+    现在, 可能需要将"自然语言处理"作为 Concept 实体。
+    然后我看到"他的研究方向"... 整理后输出如下:
+    {"entities": [...]}
+    ```
+    """
+    if not text:
+        return None
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for j in range(i, len(text)):
+            c = text[j]
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[i:j + 1]
+    # 尝试数组
+    for i, ch in enumerate(text):
+        if ch != "[":
+            continue
+        depth = 0
+        in_str = False
+        esc = False
+        for j in range(i, len(text)):
+            c = text[j]
+            if esc:
+                esc = False
+                continue
+            if c == "\\":
+                esc = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[i:j + 1]
+    return None
 
 
 def strip_json_fences(text: str) -> str:
@@ -60,21 +124,21 @@ def strip_json_fences(text: str) -> str:
     text = text.replace("```", "")
 
     # Step 2: Extract the JSON object or array from surrounding text
-    # Try to find the outermost {} or []
-    obj_match = _RE_JSON_OBJECT.search(text)
-    arr_match = _RE_JSON_ARRAY.search(text)
-
-    extracted = None
-    if obj_match and arr_match:
-        # Use whichever starts first
-        if obj_match.start() <= arr_match.start():
+    # 优先用括号配对法, 能正确处理"模型先做 CoT 推理再给 JSON"的情况;
+    # 再回退到非贪婪正则 (用于匹配首尾边界不够清晰的情况)
+    extracted = _extract_balanced_json(text)
+    if extracted is None:
+        obj_match = _RE_JSON_OBJECT.search(text)
+        arr_match = _RE_JSON_ARRAY.search(text)
+        if obj_match and arr_match:
+            if obj_match.start() <= arr_match.start():
+                extracted = obj_match.group(0)
+            else:
+                extracted = arr_match.group(0)
+        elif obj_match:
             extracted = obj_match.group(0)
-        else:
+        elif arr_match:
             extracted = arr_match.group(0)
-    elif obj_match:
-        extracted = obj_match.group(0)
-    elif arr_match:
-        extracted = arr_match.group(0)
 
     if extracted is not None:
         text = extracted
@@ -188,17 +252,35 @@ def retry_llm_json_call(
 
     last_error: Optional[json.JSONDecodeError] = None
 
+    # 在重试时追加"纠错消息", 告诉模型上次回复不是合法 JSON,
+    # 引导它直接输出 JSON, 不要先做 CoT 推理。temperature 同步降到 0 让输出更确定。
+    correction_msg = (
+        "重要: 你上一条回复不是合法的 JSON, 我无法解析。"
+        "请直接重新输出一个合法 JSON 对象(以 `{` 开头, 以 `}` 结尾),"
+        "不要重复你的推理过程, 不要用 ```json``` 包裹, 也不要任何解释文字。"
+    )
+    retry_temperature = max(0.0, temperature - 0.1) if temperature > 0 else 0.0
+
     for attempt in range(max_retries + 1):
+        # 重试时: 把原 prompt 再发一次 + 追加"纠错"消息
+        current_messages = list(messages)
+        if attempt > 0:
+            current_messages = list(messages) + [
+                {"role": "user", "content": correction_msg}
+            ]
+
+        current_temperature = retry_temperature if attempt > 0 else temperature
+
         response = llm.chat(
-            messages,
-            temperature=temperature,
+            current_messages,
+            temperature=current_temperature,
             max_tokens=max_tokens,
             response_format=response_format,
         )
 
         logger.info(
-            "LLM response [%s] attempt=%d: usage=%s, content:\n%s",
-            context_label, attempt + 1,
+            "LLM response [%s] attempt=%d (temp=%.2f): usage=%s, content:\n%s",
+            context_label, attempt + 1, current_temperature,
             response.usage if hasattr(response, "usage") else "N/A",
             response.content,
         )
@@ -212,7 +294,7 @@ def retry_llm_json_call(
             if attempt < max_retries:
                 delay = retry_delay * (2 ** attempt)
                 logger.warning(
-                    "JSON parse failed for %s (attempt %d/%d), retrying in %.1fs: %.200s",
+                    "JSON parse failed for %s (attempt %d/%d), retrying in %.1fs with correction prompt: %.200s",
                     context_label,
                     attempt + 1,
                     max_retries + 1,

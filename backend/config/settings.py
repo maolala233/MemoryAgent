@@ -48,16 +48,17 @@ class Settings(BaseSettings):
     )
 
     # ---------------- 传统 LLM（兼容旧逻辑）----------------
-    default_llm_provider: str = "mock"  # mock | ollama | openai
+    default_llm_provider: str = "ollama"  # mock | ollama | openai
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.1"
+    ollama_model: str = "qwen3:8b"
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
 
     # ---------------- 传统 Embedding（兼容旧逻辑）----------------
-    embedding_provider: str = "mock"  # mock | ollama | openai
-    embedding_model: str = "nomic-embed-text"
-    embedding_dim: int = 384
+    embedding_provider: str = "vllm"  # mock | ollama | openai | vllm
+    embedding_model: str = "bge-m3"
+    embedding_dim: int = 1024
+    embedding_remote_base_url: str = "http://localhost:8101/v1"  # vllm 8101 默认
 
     # ---------------- 缓存 ----------------
     enable_cache: bool = True
@@ -74,29 +75,31 @@ class Settings(BaseSettings):
     mandol_auto_save_interval: int = 300
 
     # ---- Mandol LLM（OpenAI 兼容）----
-    mandol_llm_model: str = "gemma4:12b"
+    mandol_llm_model: str = "qwen3:8b"
     mandol_llm_base_url: str = "http://localhost:11434/v1"
     mandol_llm_api_key: str = "ollama"
 
     # ---- Mandol Embedder ----
-    mandol_embedder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    mandol_embedder_model: str = "bge-m3"
     mandol_embedder_device: str = "cpu"  # cpu | cuda | cuda:0
-    mandol_embedder_dim: int = 384
-    mandol_use_remote_embedder: bool = False
-    mandol_embedder_remote_base_url: str = ""
+    mandol_embedder_dim: int = 1024
+    mandol_use_remote_embedder: bool = True
+    mandol_embedder_remote_base_url: str = "http://localhost:8101"
     mandol_embedder_remote_api_path: str = "/v1/embeddings"
     mandol_embedder_remote_timeout: int = 60
+    mandol_embedder_api_key: str = ""  # vllm 等本地服务通常不需要, 但 Mandol 内部要求非空
     # 本地嵌入模型目录（离线模式优先使用此路径加载）
     mandol_embedder_local_path: str = ""
     mandol_embedder_offline_only: bool = False
 
     # ---- Mandol Reranker ----
-    mandol_reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    mandol_reranker_model: str = "bge-reranker-v2-m3"
     mandol_reranker_device: str = "cpu"
-    mandol_use_remote_reranker: bool = False
-    mandol_reranker_remote_base_url: str = ""
+    mandol_use_remote_reranker: bool = True
+    mandol_reranker_remote_base_url: str = "http://localhost:8102"
     mandol_reranker_remote_api_path: str = "/v1/rerank"
     mandol_reranker_remote_timeout: int = 60
+    mandol_reranker_api_key: str = ""
     # 本地 reranker 模型目录（离线模式优先使用此路径加载）
     mandol_reranker_local_path: str = ""
     mandol_reranker_offline_only: bool = False

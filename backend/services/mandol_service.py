@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -84,9 +86,31 @@ class MandolService:
         self._storage_root: Optional[str] = None
         self._save_in_progress = threading.Event()
         self._last_save_result: Optional[Dict[str, Any]] = None
+        # 高阶构建状态：供前端轮询 (后端 /api/mandol/build-status)
+        self._build_in_progress = threading.Event()
+        self._build_progress_message: str = ""
+        self._build_started_at: float = 0.0
+        self._build_finished_at: float = 0.0
+        self._last_build_result: Optional[Dict[str, Any]] = None
         # 仪表盘缓存：避免每次刷新都触发 list_units() / Neo4j count / Milvus 探测
         self._stats_cache: Optional[Dict[str, Any]] = None
         self._stats_cache_ts: float = 0.0
+        # === 跨会话 token 累计 (持久化到 token_usage.json) ===
+        # 区分 build / chat, 既能监控构建期抽取的开销,也能监控在线问答的消耗。
+        # 关键：内存里累计 → save 时持久化 → 重启后从文件恢复, 避免每次启动清零。
+        self._cumulative_token_usage: Dict[str, Dict[str, int]] = {
+            "build": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "chat": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "total": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        self._token_usage_lock = threading.RLock()
+        self._token_usage_file: Optional[Path] = None
+        # build_high_level 完成后, 用它与 get_token_usage() 当前值做差分,
+        # 避免把同一份 token 累加多次
+        self._last_build_baseline: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+        }
         self._external_cache: Optional[Dict[str, Any]] = None
         self._external_cache_ts: float = 0.0
         self._spaces_cache: Optional[List[Dict[str, Any]]] = None
@@ -172,9 +196,25 @@ class MandolService:
         except Exception as exc:
             warn(f"Milvus UnitStore 初始化失败，回退到 InMemoryUnitStore: {exc}")
 
-        # 尝试从已有快照加载，否则新建
+        # 尝试从已有快照加载，否则新建。兼容旧版本 bug: 如果 snapshot
+        # 是空的但外部 UnitStore(Milvus) 里还有数据，跳过空快照，避免 load
+        # 时 reset_state() 先清掉可恢复的 Milvus 数据。
         snapshot_file = Path(storage_root) / "snapshot.json"
-        if snapshot_file.exists():
+        should_load_snapshot = snapshot_file.exists()
+        if should_load_snapshot and unit_store is not None:
+            try:
+                unit_count_in_snapshot = self._snapshot_unit_count(snapshot_file)
+                unit_count_in_store = len(unit_store.list_units() or [])
+                if unit_count_in_snapshot == 0 and unit_count_in_store > 0:
+                    should_load_snapshot = False
+                    warn(
+                        f"检测到空 snapshot 但 Milvus 中有 {unit_count_in_store} 条 unit，"
+                        "跳过 snapshot 加载并从外部存储恢复"
+                    )
+            except Exception as exc:
+                warn(f"检查 snapshot/Milvus 状态失败，继续按 snapshot 加载: {exc}")
+
+        if should_load_snapshot:
             try:
                 self._system = MemorySystem.load(
                     str(snapshot_file),
@@ -228,7 +268,24 @@ class MandolService:
         except Exception as exc:
             warn(f"重建 space 关联失败: {exc}")
 
+        # 加载跨会话 token 累计 (build / chat / total), 持久化到 token_usage.json
+        # 关键: 不能放在 _ensure_initialized 前面, 因为 _token_usage_path 需要
+        # storage_root, 而 storage_root 在 _do_initialize 末尾才确定。
+        self._load_cumulative_token_usage()
+
         return True
+
+    def _snapshot_unit_count(self, snapshot_path: Path) -> int:
+        """Return persisted unit count from a Mandol snapshot directory/file."""
+        units_path = snapshot_path / "data" / "units.json"
+        if not units_path.exists():
+            return 0
+        try:
+            payload = json.loads(units_path.read_text(encoding="utf-8") or "{}")
+        except (OSError, json.JSONDecodeError):
+            return 0
+        units = payload.get("units") or []
+        return len(units) if isinstance(units, list) else 0
 
     def rebuild_spaces_from_units(self) -> int:
         """从 unit.metadata["spaces"] 反向重建 MilvusUnitStore._spaces 注册表。
@@ -428,6 +485,281 @@ class MandolService:
             MandolService._milvus_client = None
             info("Mandol MemorySystem 已关闭")
 
+    def clear_all(self, reinit: bool = False) -> Dict[str, Any]:
+        """清空所有 Mandol 记忆数据：Neo4j 图 + Milvus 向量 + 本地快照 + 内存状态。
+
+        用于在 prompt/embedding 等重大变更后彻底重建。完成后调用方需重新 ingest + build。
+        返回清空统计 + 重建后空系统状态(仅当 reinit=True 时包含 system_reinitialized)。
+
+        reinit=False 时不重建空系统,避免 30+ 秒的同步阻塞(前端会卡住);
+        下次访问 Mandol 时会懒加载重新初始化。
+        """
+        import shutil
+
+        with self._lock:
+            stats: Dict[str, Any] = {
+                "neo4j_cleared": 0,
+                "milvus_cleared": 0,
+                "persistence_cleared": False,
+                "system_reinitialized": False,
+            }
+            if not self._ensure_initialized():
+                return {"error": "Mandol 未启用或未初始化", **stats}
+
+            # 0) 关键: 先释放系统对象(并关闭其 Milvus 单例),
+            #    否则快照目录可能仍被句柄持有, 导致后续 rmtree 失败.
+            try:
+                self._system = None
+                self._init_attempted = False
+                MandolService._unit_store = None
+                MandolService._milvus_client = None
+            except Exception:
+                pass
+
+            # 1) 清空 Neo4j 图(节点 + 关系)
+            try:
+                # 通过本地驱动直连, 绕开已释放的 in-memory store
+                from neo4j import GraphDatabase
+                from backend.config.settings import settings as _s
+                driver = GraphDatabase.driver(
+                    _s.mandol_neo4j_uri, auth=(_s.mandol_neo4j_user, _s.mandol_neo4j_password)
+                )
+                with driver.session(database=_s.mandol_neo4j_database) as session:
+                    result = session.run("MATCH (n) DETACH DELETE n RETURN count(n) AS c")
+                    cnt = result.single()["c"]
+                driver.close()
+                stats["neo4j_cleared"] = int(cnt)
+                info(f"✓ Neo4j 节点 + 关系已清空 ({cnt} 节点)")
+            except Exception as exc:
+                warn(f"清空 Neo4j 失败: {exc}")
+                stats["neo4j_error"] = str(exc)
+
+            # 2) 清空 Milvus 向量集合(直连)
+            try:
+                from pymilvus import MilvusClient
+                from backend.config.settings import settings as _s
+                _client = MilvusClient(uri=_s.mandol_milvus_uri)
+                coll = _s.mandol_milvus_collection
+                if _client.has_collection(coll):
+                    _client.drop_collection(coll)
+                _client.close()
+                stats["milvus_cleared"] = 1
+                info(f"✓ Milvus 集合 {coll} 已 drop")
+            except Exception as exc:
+                warn(f"清空 Milvus 失败: {exc}")
+                stats["milvus_error"] = str(exc)
+
+            # 3) 删除本地全部持久化文件 + 目录
+            #    注意: Mandol 实际把 snapshot.json 当作「目录」使用
+            #         (snapshot.json/{config,manifest,data,state}.json),
+            #         老代码用 p.is_file() + p.unlink() 会全部静默失败,
+            #         导致 data/mandol/snapshot.json/data/{graph,units,...}.json
+            #         残留 → 重新 init 时被 _do_initialize 加载,「清空后还在」。
+            try:
+                storage_root = Path(self._storage_root or settings.mandol_storage_dir)
+                if not storage_root.exists():
+                    storage_root.mkdir(parents=True, exist_ok=True)
+
+                # 3a) 顶层：snapshot.json (是目录!) + 其他顶层 json / .bak / .tmp
+                for name in [
+                    "snapshot.json", "snapshot.json.tmp", "snapshot.json.bak",
+                    "manifest.json", "token_usage.json",
+                ]:
+                    p = storage_root / name
+                    if p.is_file():
+                        p.unlink()
+                    elif p.is_dir():
+                        shutil.rmtree(p, ignore_errors=True)
+
+                # 3b) data/ 子目录（含 graph / sessions / units / spaces）
+                data_dir = storage_root / "data"
+                if data_dir.is_dir():
+                    shutil.rmtree(data_dir, ignore_errors=True)
+
+                # 3c) state/ 子目录（processed_state.json）
+                state_dir = storage_root / "state"
+                if state_dir.is_dir():
+                    shutil.rmtree(state_dir, ignore_errors=True)
+
+                # 3d) 兜底: 任何遗留的 *.json / *.bak / *.tmp 都清掉
+                for pattern in ("*.json", "*.bak", "*.tmp"):
+                    for p in storage_root.glob(pattern):
+                        try:
+                            if p.is_file():
+                                p.unlink()
+                            elif p.is_dir():
+                                shutil.rmtree(p, ignore_errors=True)
+                        except Exception:
+                            pass
+
+                stats["persistence_cleared"] = True
+                info(f"✓ 持久化已删除: {storage_root}")
+            except Exception as exc:
+                warn(f"删除持久化失败: {exc}")
+                stats["persistence_error"] = str(exc)
+
+            # 4) 可选: 重新初始化为空系统(默认关闭,避免 30+ 秒同步阻塞)
+            if reinit:
+                try:
+                    self._invalidate_dashboard_caches()
+                    ok = self._do_initialize()
+                    stats["system_reinitialized"] = ok
+                    if ok:
+                        info("✓ Mandol 已重新初始化为空系统")
+                except Exception as exc:
+                    warn(f"重新初始化失败: {exc}")
+                    stats["reinit_error"] = str(exc)
+
+            return stats
+
+    # ─── 清空任务后台状态(供 /clear-status 轮询) ─────────────────────
+    _clear_state: Dict[str, Any] = {
+        "status": "idle",        # idle | running | completed | failed
+        "started_at": None,
+        "finished_at": None,
+        "elapsed_seconds": 0.0,
+        "message": "",
+        "result": None,
+    }
+    _clear_lock = threading.Lock()
+
+    def clear_status(self) -> Dict[str, Any]:
+        """返回当前清空任务的状态(供前端轮询)。"""
+        with self._clear_lock:
+            state = dict(self._clear_state)
+            if state["status"] == "running" and state["started_at"]:
+                state["elapsed_seconds"] = round(
+                    time.time() - float(state["started_at"]), 1
+                )
+            return state
+
+    def clear_all_async(self) -> Dict[str, Any]:
+        """异步触发清空, 立即返回当前状态(实际工作在后台线程跑)。
+
+        修复: 同步 clear_everything 在 reinit 时会被 _do_initialize 阻塞
+        30+ 秒, 前端一直转圈像卡死。改为后台线程 + 状态轮询。
+        """
+        if not self._enabled:
+            return {"error": "Mandol 未启用"}
+        with self._clear_lock:
+            if self._clear_state["status"] == "running":
+                return dict(self._clear_state)
+            self._clear_state = {
+                "status": "running",
+                "started_at": time.time(),
+                "finished_at": None,
+                "elapsed_seconds": 0.0,
+                "message": "正在清空 Mandol + Neo4j + Milvus + 本地快照…",
+                "result": None,
+            }
+
+        def _runner() -> None:
+            try:
+                # 1) 清空 Mandol + Neo4j + Milvus + 全部持久化文件
+                result = self.clear_all(reinit=False)
+                if result.get("error"):
+                    raise RuntimeError(result["error"])
+
+                # 2) 删除基础记忆文件 + 剥离 summary
+                fs_stats: Dict[str, Any] = {"files_removed": 0, "summary_stripped": 0, "errors": []}
+                try:
+                    import shutil
+                    import re
+                    vault_imports = settings.vault_dir / "imports"
+                    if vault_imports.is_dir():
+                        for child in list(vault_imports.iterdir()):
+                            try:
+                                if child.is_dir():
+                                    shutil.rmtree(child, ignore_errors=True)
+                                    fs_stats["files_removed"] += 1
+                                elif child.is_file():
+                                    child.unlink()
+                                    fs_stats["files_removed"] += 1
+                            except Exception as exc:  # noqa: BLE001
+                                fs_stats["errors"].append(f"{child}: {exc}")
+                    for md_file in settings.vault_dir.rglob("*.md"):
+                        try:
+                            text = md_file.read_text(encoding="utf-8")
+                            if text.startswith("---"):
+                                new_text = re.sub(
+                                    r"^summary:\s*.*?\n",
+                                    "",
+                                    text,
+                                    count=1,
+                                    flags=re.MULTILINE,
+                                )
+                                if new_text != text:
+                                    md_file.write_text(new_text, encoding="utf-8")
+                                    fs_stats["summary_stripped"] += 1
+                        except Exception as exc:  # noqa: BLE001
+                            fs_stats["errors"].append(f"strip {md_file}: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    fs_stats["errors"].append(str(exc))
+
+                result["file_system"] = fs_stats
+
+                # 3) 删除原始上传文件 + SQLite 记忆数据库
+                extra_stats: Dict[str, Any] = {"uploads_removed": 0, "db_removed": False, "errors": []}
+                try:
+                    data_root = Path(settings.vault_dir).parent  # 即 data/
+                    uploads_dir = data_root / "uploads"
+                    if uploads_dir.is_dir():
+                        for child in list(uploads_dir.iterdir()):
+                            try:
+                                if child.is_file():
+                                    child.unlink()
+                                    extra_stats["uploads_removed"] += 1
+                                elif child.is_dir():
+                                    shutil.rmtree(child, ignore_errors=True)
+                                    extra_stats["uploads_removed"] += 1
+                            except Exception as exc:  # noqa: BLE001
+                                extra_stats["errors"].append(f"upload {child}: {exc}")
+                    for db_name in ("memory.db", "memory.db-journal", "memory.db-wal", "memory.db-shm"):
+                        dbp = data_root / db_name
+                        if dbp.is_file():
+                            try:
+                                dbp.unlink()
+                                extra_stats["db_removed"] = True
+                            except Exception as exc:  # noqa: BLE001
+                                extra_stats["errors"].append(f"db {dbp}: {exc}")
+                except Exception as exc:  # noqa: BLE001
+                    extra_stats["errors"].append(str(exc))
+
+                result["file_system"].update(extra_stats)
+
+                # 4) 立即失效仪表盘缓存, 下次刷新拿真实空状态
+                self._invalidate_dashboard_caches()
+
+                with self._clear_lock:
+                    self._clear_state.update({
+                        "status": "completed",
+                        "finished_at": time.time(),
+                        "elapsed_seconds": round(time.time() - float(self._clear_state["started_at"]), 1),
+                        "message": (
+                            f"清空完成: neo4j={result.get('neo4j_cleared', 0)} "
+                            f"milvus={result.get('milvus_cleared', 0)} "
+                            f"files_removed={fs_stats['files_removed']} "
+                            f"uploads_removed={extra_stats['uploads_removed']} "
+                            f"summary_stripped={fs_stats['summary_stripped']}"
+                        ),
+                        "result": result,
+                    })
+                info(f"✓ 清空全部完成: {self._clear_state['message']}")
+            except Exception as exc:
+                logger.exception("clear_all_async failed")
+                with self._clear_lock:
+                    self._clear_state.update({
+                        "status": "failed",
+                        "finished_at": time.time(),
+                        "elapsed_seconds": round(
+                            time.time() - float(self._clear_state["started_at"]), 1
+                        ),
+                        "message": f"清空失败: {exc}",
+                    })
+
+        threading.Thread(target=_runner, daemon=True, name="mandol-clear").start()
+        return self.clear_status()
+
     @property
     def is_enabled(self) -> bool:
         return self._enabled
@@ -449,6 +781,299 @@ class MandolService:
         if not self._enabled:
             return False
         return self._ensure_initialized()
+
+    # ─── 仪表盘细粒度清空接口 ───────────────────────────────────
+    def _check_initialized(self) -> Optional[Dict[str, Any]]:
+        """检查系统是否就绪，未就绪返回错误 dict（不抛异常）。"""
+        if not self._ensure_initialized() or self._system is None:
+            return {"error": "Mandol 未启用或未初始化"}
+        return None
+
+    def _count_system_units(self) -> int:
+        """统计 semantic_map 内的单元总数。"""
+        try:
+            system = self._system
+            sem_map = getattr(system, "_semantic_map", None)
+            if sem_map is None:
+                return 0
+            units = sem_map.list_units() or []
+            return len(units)
+        except Exception:
+            return 0
+
+    def clear_units(self) -> Dict[str, Any]:
+        """仅清空记忆单元（Milvus 向量 + 内存中的单元 + Neo4j 关系）；
+        实体 / 事件节点本身保留。"""
+        with self._lock:
+            err = self._check_initialized()
+            if err:
+                return err
+            system = self._system
+            sem_map = getattr(system, "_semantic_map", None)
+            removed = 0
+            try:
+                if sem_map is not None:
+                    for u in list(sem_map.list_units() or []):
+                        try:
+                            sem_map.delete_unit(u.uid)
+                            removed += 1
+                        except Exception as exc:  # noqa: BLE001
+                            warn(f"删除单元 {u.uid} 失败: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                warn(f"枚举单元失败: {exc}")
+            # 同步清理 Milvus（drop+重建空 collection，保留 schema）
+            milvus_ok = False
+            try:
+                from pymilvus import MilvusClient
+                _client = MilvusClient(uri=settings.mandol_milvus_uri)
+                coll = settings.mandol_milvus_collection
+                if _client.has_collection(coll):
+                    _client.drop_collection(coll)
+                milvus_ok = True
+                _client.close()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"清空 Milvus 失败: {exc}")
+            # 保存快照
+            try:
+                system.save()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"保存快照失败: {exc}")
+            self._invalidate_dashboard_caches()
+            return {"detail": f"units_removed={removed} milvus={'ok' if milvus_ok else 'fail'}"}
+
+    def clear_spaces(self) -> Dict[str, Any]:
+        """仅清空记忆空间。仅在记忆单元为 0 时允许执行。"""
+        with self._lock:
+            err = self._check_initialized()
+            if err:
+                return err
+            if self._count_system_units() > 0:
+                return {"error": "请先清空记忆单元后再清空记忆空间"}
+            system = self._system
+            sem_map = getattr(system, "_semantic_map", None)
+            removed = 0
+            try:
+                if sem_map is not None:
+                    for sp in list(sem_map.list_spaces() or []):
+                        try:
+                            sem_map.delete_space(sp.name, cascade=True)
+                            removed += 1
+                        except Exception as exc:  # noqa: BLE001
+                            warn(f"删除空间 {sp.name} 失败: {exc}")
+            except Exception as exc:  # noqa: BLE001
+                warn(f"枚举空间失败: {exc}")
+            try:
+                system.save()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"保存快照失败: {exc}")
+            self._invalidate_dashboard_caches()
+            return {"detail": f"spaces_removed={removed}"}
+
+    def clear_entities(self) -> Dict[str, Any]:
+        """清空 Neo4j 中所有实体节点 + Mandol 内部实体集合。"""
+        with self._lock:
+            err = self._check_initialized()
+            if err:
+                return err
+            system = self._system
+            removed = 0
+            # Neo4j
+            try:
+                from neo4j import GraphDatabase
+                driver = GraphDatabase.driver(
+                    settings.mandol_neo4j_uri,
+                    auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+                )
+                with driver.session(database=settings.mandol_neo4j_database) as sess:
+                    result = sess.run(
+                        "MATCH (n) WHERE n.uid STARTS WITH 'entity:' "
+                        "DETACH DELETE n RETURN count(n) AS c"
+                    )
+                    removed = int(result.single()["c"])
+                driver.close()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"清空实体(Neo4j)失败: {exc}")
+            # 内存实体集合
+            try:
+                all_entities = getattr(system, "_all_entities", None)
+                if isinstance(all_entities, list):
+                    all_entities.clear()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"清空内存实体失败: {exc}")
+            try:
+                system.save()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"保存快照失败: {exc}")
+            self._invalidate_dashboard_caches()
+            return {"detail": f"entities_removed={removed}"}
+
+    def clear_events(self) -> Dict[str, Any]:
+        """清空 Neo4j 中所有事件节点 + Mandol 内部事件集合。"""
+        with self._lock:
+            err = self._check_initialized()
+            if err:
+                return err
+            system = self._system
+            removed = 0
+            try:
+                from neo4j import GraphDatabase
+                driver = GraphDatabase.driver(
+                    settings.mandol_neo4j_uri,
+                    auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+                )
+                with driver.session(database=settings.mandol_neo4j_database) as sess:
+                    result = sess.run(
+                        "MATCH (n) WHERE n.uid STARTS WITH 'event:' "
+                        "DETACH DELETE n RETURN count(n) AS c"
+                    )
+                    removed = int(result.single()["c"])
+                driver.close()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"清空事件(Neo4j)失败: {exc}")
+            try:
+                all_events = getattr(system, "_all_events", None)
+                if isinstance(all_events, list):
+                    all_events.clear()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"清空内存事件失败: {exc}")
+            try:
+                system.save()
+            except Exception as exc:  # noqa: BLE001
+                warn(f"保存快照失败: {exc}")
+            self._invalidate_dashboard_caches()
+            return {"detail": f"events_removed={removed}"}
+
+    def clear_neo4j_only(self) -> Dict[str, Any]:
+        """清空整个 Neo4j 图（节点 + 关系）。"""
+        with self._lock:
+            removed = 0
+            try:
+                from neo4j import GraphDatabase
+                driver = GraphDatabase.driver(
+                    settings.mandol_neo4j_uri,
+                    auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password),
+                )
+                with driver.session(database=settings.mandol_neo4j_database) as sess:
+                    result = sess.run("MATCH (n) DETACH DELETE n RETURN count(n) AS c")
+                    removed = int(result.single()["c"])
+                driver.close()
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"Neo4j 清空失败: {exc}"}
+            return {"detail": f"neo4j_removed={removed}"}
+
+    def clear_milvus_only(self) -> Dict[str, Any]:
+        """清空 Milvus 向量集合（drop collection）。"""
+        with self._lock:
+            try:
+                from pymilvus import MilvusClient
+                _client = MilvusClient(uri=settings.mandol_milvus_uri)
+                coll = settings.mandol_milvus_collection
+                if _client.has_collection(coll):
+                    _client.drop_collection(coll)
+                _client.close()
+            except Exception as exc:  # noqa: BLE001
+                return {"error": f"Milvus 清空失败: {exc}"}
+            return {"detail": "milvus=cleared"}
+
+    def clear_summaries(self) -> Dict[str, Any]:
+        """剥离 vault 文档 frontmatter 中的 summary 字段。"""
+        import re
+        stripped = 0
+        errors: list = []
+        try:
+            for md_file in settings.vault_dir.rglob("*.md"):
+                try:
+                    text = md_file.read_text(encoding="utf-8")
+                    if not text.startswith("---"):
+                        continue
+                    new_text = re.sub(
+                        r"^summary:\s*.*?\n",
+                        "",
+                        text,
+                        count=1,
+                        flags=re.MULTILINE,
+                    )
+                    if new_text != text:
+                        md_file.write_text(new_text, encoding="utf-8")
+                        stripped += 1
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"strip {md_file}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+        return {"detail": f"summaries_stripped={stripped} errors={len(errors)}"}
+
+    def clear_base_memories(self) -> Dict[str, Any]:
+        """删除 data/vault/imports/ 下所有解析文件。"""
+        import shutil
+        removed = 0
+        errors: list = []
+        try:
+            vault_imports = settings.vault_dir / "imports"
+            if vault_imports.is_dir():
+                for child in list(vault_imports.iterdir()):
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+                            removed += 1
+                        elif child.is_file():
+                            child.unlink()
+                            removed += 1
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{child}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(str(exc))
+        return {"detail": f"dirs_removed={removed} errors={len(errors)}"}
+
+    def clear_everything(self) -> Dict[str, Any]:
+        """清空所有数据：Mandol 记忆 + Neo4j + Milvus + 基础记忆文件 + 摘要。"""
+        # 1) 复用 clear_all 完成 Mandol + Neo4j + Milvus
+        result = self.clear_all()
+        if result.get("error"):
+            return result
+        # 2) 删除基础记忆文件（data/vault/imports）
+        fs_stats: Dict[str, Any] = {"files_removed": 0, "summary_stripped": 0, "errors": []}
+        try:
+            import shutil
+            import re
+            vault_imports = settings.vault_dir / "imports"
+            if vault_imports.is_dir():
+                for child in list(vault_imports.iterdir()):
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child, ignore_errors=True)
+                            fs_stats["files_removed"] += 1
+                        elif child.is_file():
+                            child.unlink()
+                            fs_stats["files_removed"] += 1
+                    except Exception as exc:  # noqa: BLE001
+                        fs_stats["errors"].append(f"{child}: {exc}")
+            # 3) 剥离 vault 文件 frontmatter 中的 summary 字段
+            for md_file in settings.vault_dir.rglob("*.md"):
+                try:
+                    text = md_file.read_text(encoding="utf-8")
+                    if text.startswith("---"):
+                        new_text = re.sub(
+                            r"^summary:\s*.*?\n",
+                            "",
+                            text,
+                            count=1,
+                            flags=re.MULTILINE,
+                        )
+                        if new_text != text:
+                            md_file.write_text(new_text, encoding="utf-8")
+                            fs_stats["summary_stripped"] += 1
+                except Exception as exc:  # noqa: BLE001
+                    fs_stats["errors"].append(f"strip {md_file}: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            fs_stats["errors"].append(str(exc))
+
+        result["detail"] = (
+            f"{result.get('detail', '')} "
+            f"files_removed={fs_stats['files_removed']} "
+            f"summary_stripped={fs_stats['summary_stripped']}"
+        )
+        result["file_system"] = fs_stats
+        return result
 
     def _require(self):
         """要求系统已初始化，否则抛出异常。"""
@@ -705,8 +1330,32 @@ class MandolService:
         """
         system = self._require()
         t0 = time.time()
+        # 记录 build 前的实体/事件数,用于计算本次新增/去重
+        try:
+            stats_before = system.get_fact_stats()
+        except Exception:
+            stats_before = {"entity_count": 0, "event_count": 0}
         report = system.build_high_level(mode=mode, skip_summary=skip_summary)
         elapsed = time.time() - t0
+        # 累计本次构建的 token 用量 (与 chat 分离, 便于监控构建期开销)
+        try:
+            usage = self._safe_get_token_usage()
+            if usage and (usage.get("total_tokens") or 0) > 0:
+                # 注意: get_token_usage() 返回的是本进程从启动到现在的累计
+                # 不能直接当作增量 (否则会重复计算)。所以这里用 last_build_baseline
+                # 做差分, 第一次 build 用现在的值作为基线
+                with self._token_usage_lock:
+                    base = self._last_build_baseline
+                    delta_p = max(0, int(usage.get("prompt_tokens") or 0) - base["prompt_tokens"])
+                    delta_c = max(0, int(usage.get("completion_tokens") or 0) - base["completion_tokens"])
+                    self._last_build_baseline = {
+                        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                        "completion_tokens": int(usage.get("completion_tokens") or 0),
+                    }
+                if delta_p > 0 or delta_c > 0:
+                    self.add_build_tokens(delta_p, delta_c)
+        except Exception as exc:  # noqa: BLE001
+            warn(f"累计 build token 用量失败(忽略): {exc}")
         # 高阶抽取完成后,立即 flush 图存储(Mandol 的 Neo4jGraphStore 会把关系
         # 缓存在 _pending_upserts 里,只有 flush() 才会真正写入 Neo4j;否则下次
         # 读图 / 持久化到 graph.json 时取不到这些关系)。
@@ -714,6 +1363,12 @@ class MandolService:
             system.flush()
         except Exception as exc:  # noqa: BLE001
             warn(f"Mandol 高级构建后 flush 失败(忽略): {exc}")
+        try:
+            save_result = self.save(wait=True)
+            if save_result.get("status") == "failed":
+                warn(f"Mandol 高级构建后 snapshot 保存失败: {save_result.get('error')}")
+        except Exception as exc:  # noqa: BLE001
+            warn(f"Mandol 高级构建后 snapshot 保存失败(忽略): {exc}")
         # Mandol 默认使用 InMemoryGraphStore(NetworkX),与外部 Neo4j 之间
         # 没有自动同步,这里把内存图同步到 Neo4j,供前端 neo4j tab 可视化。
         try:
@@ -723,6 +1378,13 @@ class MandolService:
             warn(f"同步 Mandol 内存图到 Neo4j 失败(忽略): {exc}")
             result_extra = {"status": "error", "error": str(exc)}
         self._invalidate_dashboard_caches()
+        # 实体/事件统计 (本次 build 新增)
+        try:
+            stats_after = system.get_fact_stats()
+        except Exception:
+            stats_after = stats_before
+        entities_added = max(0, stats_after["entity_count"] - stats_before["entity_count"])
+        events_added = max(0, stats_after["event_count"] - stats_before["event_count"])
         result = {
             "status": getattr(report, "status", "completed"),
             "mode": mode,
@@ -733,9 +1395,22 @@ class MandolService:
             "warnings": list(getattr(report, "warnings", []) or []),
             "error": getattr(report, "error_message", None),
             "neo4j_sync": result_extra,
+            # ---- 抽取结果 (供前端展示) ----
+            "extraction": {
+                "entity_count": stats_after["entity_count"],
+                "event_count": stats_after["event_count"],
+                "entities_added": entities_added,
+                "events_added": events_added,
+                "entities_extracted": stats_after.get("entities_extracted", 0),
+                "events_extracted": stats_after.get("events_extracted", 0),
+                "entities_deduped": stats_after.get("entities_deduped", 0),
+                "events_deduped": stats_after.get("events_deduped", 0),
+                "total_units": getattr(report, "units_processed", 0),
+            },
         }
         info(f"高阶记忆构建完成: {result['status']}, "
              f"会话={result['sessions_processed']}, 单元={result['units_processed']}, "
+             f"实体={stats_after['entity_count']}, 事件={stats_after['event_count']}, "
              f"耗时={elapsed:.2f}s")
         return result
 
@@ -773,7 +1448,7 @@ class MandolService:
             query,
             top_k=top_k,
             use_rerank=use_rerank,
-            auto_build_if_empty=True,
+            auto_build_if_empty=False,
             skip_views=skip_views,
         )
         return [_hit_to_dict(h) for h in hits]
@@ -819,7 +1494,7 @@ class MandolService:
             query,
             top_k=top_k,
             use_rerank=use_rerank,
-            auto_build_if_empty=True,
+            auto_build_if_empty=False,
             skip_views=skip_views,
         )
         return [_hit_to_dict(h) for h in hits]
@@ -849,7 +1524,7 @@ class MandolService:
         sys_obj = self._require()
         # 先检索命中
         hits = sys_obj.holistic_retrieve(
-            query, top_k=top_k, use_rerank=use_rerank, auto_build_if_empty=True
+            query, top_k=top_k, use_rerank=use_rerank, auto_build_if_empty=False
         )
         hits_dicts = [_hit_to_dict(h) for h in hits]
         # 生成答案
@@ -860,6 +1535,22 @@ class MandolService:
             temperature=temperature,
             max_tokens=max_tokens,
         )
+        # 累计 chat token 用量 (非流式分支 /api/chat 走的路径):
+        # ask_with_hits 没返回 usage, 只能本地估算, 用于仪表盘监控真实开销。
+        # prompt 估算: 拼接 system + context(检索到的 hit 文本) + query
+        try:
+            from .llm_stream import estimate_tokens as _est_tok
+            _ctx_parts = []
+            for _i, _h in enumerate(hits, 1):
+                _t = _h.unit.raw_data.get("text_content", "") if hasattr(_h, "unit") else ""
+                _ctx_parts.append(f"[{_i}] {_t}")
+            _ctx = "\n".join(_ctx_parts) if _ctx_parts else ""
+            _sys = system_prompt or ""
+            _prompt_tokens = _est_tok(_sys) + _est_tok(_ctx) + _est_tok(query)
+            _completion_tokens = _est_tok(answer or "")
+            self.add_chat_tokens(_prompt_tokens, _completion_tokens)
+        except Exception as _exc:  # noqa: BLE001
+            warn(f"ask() 累计 chat token 失败(忽略): {_exc}")
         # ⭐ 兜底: gemma4:12b 等模型只输出 reasoning 不输出 content 时,
         # 退化到流式调用（流式会正确分离 thinking/content）。
         if not (answer or "").strip():
@@ -905,7 +1596,7 @@ class MandolService:
         """流式问答生成器，yield ('hit', dict) 或 ('token', str) 或 ('done', dict)。"""
         sys_obj = self._require()
         hits = sys_obj.holistic_retrieve(
-            query, top_k=top_k, use_rerank=use_rerank, auto_build_if_empty=True
+            query, top_k=top_k, use_rerank=use_rerank, auto_build_if_empty=False
         )
         for h in hits:
             yield ("hit", _hit_to_dict(h))
@@ -1429,16 +2120,52 @@ class MandolService:
                     counts[label] = len(units)
                 except Exception:
                     counts[label] = 0
-            token_usage = self._safe_get_token_usage()
+
+            neo4j_entity_count = 0
+            neo4j_event_count = 0
+            try:
+                from neo4j import GraphDatabase
+                _driver = GraphDatabase.driver(
+                    settings.mandol_neo4j_uri,
+                    auth=(settings.mandol_neo4j_user, settings.mandol_neo4j_password)
+                )
+                with _driver.session(database=settings.mandol_neo4j_database) as _sess:
+                    e_result = _sess.run(
+                        "MATCH (n) WHERE n.entity_type IS NOT NULL OR labels(n) <> ['MemoryUnit'] "
+                        "AND NOT n.entity_type IS NULL RETURN count(n) AS cnt"
+                    )
+                    rec = e_result.single()
+                    if rec:
+                        neo4j_entity_count = int(rec["cnt"])
+
+                    ev_result = _sess.run(
+                        "MATCH (n) WHERE n.event_type IS NOT NULL RETURN count(n) AS cnt"
+                    )
+                    rec = ev_result.single()
+                    if rec:
+                        neo4j_event_count = int(rec["cnt"])
+                _driver.close()
+            except Exception as _neo4j_exc:
+                pass
+
+            final_entity_count = max(counts.get("knowledge_entity", 0), neo4j_entity_count)
+            final_event_count = max(counts.get("episodic_event", 0), neo4j_event_count)
+            # 仪表盘 token 卡片: 用累计值 (build + chat + total), 不再只是当前 build session
+            # 这样能反映「全平台」的真实 LLM 开销, 且重启不丢
+            by_phase = self.get_cumulative_token_usage()
+            total = by_phase.get("total") or {}
             return {
                 "enabled": True,
                 "total_units": len(all_units),
                 "total_spaces": len(all_spaces),
                 "base_memory_count": counts.get("base_memory", 0),
-                "entity_count": counts.get("knowledge_entity", 0),
-                "event_count": counts.get("episodic_event", 0),
+                "entity_count": final_entity_count,
+                "event_count": final_event_count,
                 "summary_count": counts.get("episodic_summary", 0),
-                "token_usage": token_usage,
+                # 顶层保持旧形状: {prompt, completion, total} = 三个总和
+                "token_usage": dict(total),
+                # 新增: 分阶段 (build/chat/total), 供前端卡片区分
+                "token_usage_by_phase": by_phase,
                 "dirty": bool(getattr(system, "dirty", False)),
             }
         except Exception as exc:
@@ -1573,8 +2300,26 @@ class MandolService:
         try:
             client = self._get_milvus_client()
             if client.has_collection(settings.mandol_milvus_collection):
-                stats = client.get_collection_stats(settings.mandol_milvus_collection)
-                status["milvus"]["unit_count"] = stats.get("row_count", 0)
+                # 注: Milvus Lite 的 get_collection_stats() 不可靠, row_count 经常返回 0
+                # 即使集合里其实有几百条记录。改用 query + id>"" 真实统计, 并取 max(row_count, real_count)
+                real_count = 0
+                try:
+                    real_count = len(client.query(
+                        settings.mandol_milvus_collection,
+                        filter='uid != ""',
+                        output_fields=['uid'],
+                        limit=10000,
+                    ))
+                except Exception:
+                    pass
+                stats_count = 0
+                try:
+                    stats_count = int(client.get_collection_stats(
+                        settings.mandol_milvus_collection
+                    ).get("row_count", 0) or 0)
+                except Exception:
+                    pass
+                status["milvus"]["unit_count"] = max(stats_count, real_count)
                 status["milvus"]["available"] = True
         except Exception as exc:
             status["milvus"]["error"] = str(exc)
@@ -1608,6 +2353,94 @@ class MandolService:
         except Exception:
             pass
         return {"status": "flushed"}
+
+    def build_status(self) -> Dict[str, Any]:
+        """查询高阶记忆构建的实时状态（供前端轮询）。
+
+        Returns
+        -------
+        dict
+            - status: idle | running | completed | failed
+            - message: 当前阶段的中文描述
+            - started_at / finished_at: 时间戳
+            - elapsed_seconds: 已运行时长（running 时持续累加）
+            - result: 最近一次构建的最终结果(含 extraction / neo4j_sync 等)
+        """
+        now = time.time()
+        if self._build_in_progress.is_set():
+            return {
+                "status": "running",
+                "message": self._build_progress_message or "正在构建...",
+                "started_at": self._build_started_at,
+                "finished_at": 0.0,
+                "elapsed_seconds": round(now - self._build_started_at, 1) if self._build_started_at else 0.0,
+                "result": None,
+            }
+        # 已结束
+        if self._last_build_result is None:
+            return {
+                "status": "idle",
+                "message": "",
+                "started_at": 0.0,
+                "finished_at": 0.0,
+                "elapsed_seconds": 0.0,
+                "result": None,
+            }
+        ok = self._last_build_result.get("status") not in ("failed", "error")
+        return {
+            "status": "completed" if ok else "failed",
+            "message": self._last_build_result.get("message") or (
+                "构建完成" if ok else "构建失败"
+            ),
+            "started_at": self._build_started_at,
+            "finished_at": self._build_finished_at,
+            "elapsed_seconds": round(self._build_finished_at - self._build_started_at, 1)
+                if self._build_finished_at and self._build_started_at else 0.0,
+            "result": self._last_build_result,
+        }
+
+    def build_high_level_async(
+        self, mode: str = "auto", skip_summary: bool = True
+    ) -> Dict[str, Any]:
+        """异步触发高阶记忆构建，立刻返回当前状态。
+
+        实际工作在后台线程里跑；前端通过 /api/mandol/build-status 轮询进度。
+        避免 /api/documents/{id}/save 长时间阻塞导致前端 "卡住" 错觉。
+        """
+        if self._build_in_progress.is_set():
+            return {
+                "status": "busy",
+                "message": "已有构建任务在运行",
+                "build_status": self.build_status(),
+            }
+
+        def _worker() -> None:
+            self._build_in_progress.set()
+            self._build_started_at = time.time()
+            self._build_progress_message = "正在抽取实体与事件..."
+            try:
+                # phase 1: 主体抽取 (耗时最长, 通常 60-180s)
+                result = self.build_high_level(mode=mode, skip_summary=skip_summary)
+                # phase 2: 已完成, 写最终状态
+                self._last_build_result = {
+                    "status": "completed",
+                    "message": "高阶记忆构建完成",
+                    "report": result,
+                }
+            except Exception as exc:  # noqa: BLE001
+                warn(f"异步高阶构建失败: {exc}")
+                self._last_build_result = {
+                    "status": "failed",
+                    "message": str(exc),
+                    "error": str(exc),
+                }
+            finally:
+                self._build_finished_at = time.time()
+                self._build_in_progress.clear()
+                self._build_progress_message = ""
+
+        threading.Thread(target=_worker, daemon=True).start()
+        return {"status": "started", "build_status": self.build_status()}
 
     def sync_graph_to_neo4j(self) -> Dict[str, Any]:
         """把 Mandol 内存图(NetworkX)同步到外部 Neo4j,供前端 neo4j tab 可视化。
@@ -1864,6 +2697,112 @@ class MandolService:
             return dict(self._system.get_token_usage() or {})
         except Exception:
             return {}
+
+    # ---------------- Token 累计持久化 ----------------
+    def _token_usage_path(self) -> Path:
+        """token_usage.json 存放位置: 与 snapshot.json 同目录, 但独立文件。
+        独立的好处: 不污染 snapshot, 可以热更新, 重置不影响主数据。
+        """
+        if self._token_usage_file is not None:
+            return self._token_usage_file
+        root = self._storage_root or str(settings.mandol_storage_dir)
+        Path(root).mkdir(parents=True, exist_ok=True)
+        self._token_usage_file = Path(root) / "token_usage.json"
+        return self._token_usage_file
+
+    def _load_cumulative_token_usage(self) -> None:
+        """从 token_usage.json 加载累计值, 保证重启不丢。"""
+        path = self._token_usage_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8") or "{}")
+        except (OSError, json.JSONDecodeError) as exc:
+            warn(f"token_usage.json 读取失败(忽略, 用默认值): {exc}")
+            return
+        for bucket in ("build", "chat", "total"):
+            sub = data.get(bucket) or {}
+            with self._token_usage_lock:
+                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    self._cumulative_token_usage[bucket][k] = int(sub.get(k) or 0)
+        info(
+            f"已从 token_usage.json 恢复累计: "
+            f"build={self._cumulative_token_usage['build']['total_tokens']}, "
+            f"chat={self._cumulative_token_usage['chat']['total_tokens']}, "
+            f"total={self._cumulative_token_usage['total']['total_tokens']}"
+        )
+
+    def _save_cumulative_token_usage(self) -> None:
+        """把当前累计值原子地写到 token_usage.json。"""
+        path = self._token_usage_path()
+        with self._token_usage_lock:
+            snapshot = {
+                "build": dict(self._cumulative_token_usage["build"]),
+                "chat": dict(self._cumulative_token_usage["chat"]),
+                "total": dict(self._cumulative_token_usage["total"]),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+        try:
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp, path)
+        except OSError as exc:
+            warn(f"token_usage.json 写入失败(忽略, 不影响主流程): {exc}")
+
+    def add_chat_tokens(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """在线问答每完成一轮, 累加 token 用量 + 落盘。"""
+        if prompt_tokens <= 0 and completion_tokens <= 0:
+            return
+        with self._token_usage_lock:
+            for k, v in (
+                ("prompt_tokens", int(prompt_tokens)),
+                ("completion_tokens", int(completion_tokens)),
+                ("total_tokens", int(prompt_tokens) + int(completion_tokens)),
+            ):
+                self._cumulative_token_usage["chat"][k] += v
+                self._cumulative_token_usage["total"][k] += v
+        self._save_cumulative_token_usage()
+        # 仪表盘缓存的 token_usage 也要失效, 否则 stats 5s 缓存不刷新
+        self._invalidate_dashboard_caches()
+
+    def add_build_tokens(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """高阶构建每完成一个 session, 累加 token 用量 + 落盘。
+        与 add_chat_tokens 分离, 方便监控构建期的 LLM 开销。
+        """
+        if prompt_tokens <= 0 and completion_tokens <= 0:
+            return
+        with self._token_usage_lock:
+            for k, v in (
+                ("prompt_tokens", int(prompt_tokens)),
+                ("completion_tokens", int(completion_tokens)),
+                ("total_tokens", int(prompt_tokens) + int(completion_tokens)),
+            ):
+                self._cumulative_token_usage["build"][k] += v
+                self._cumulative_token_usage["total"][k] += v
+        self._save_cumulative_token_usage()
+        self._invalidate_dashboard_caches()
+
+    def get_cumulative_token_usage(self) -> Dict[str, Dict[str, int]]:
+        """获取当前累计, 包括 build/chat/total 三个 bucket。"""
+        with self._token_usage_lock:
+            return {
+                "build": dict(self._cumulative_token_usage["build"]),
+                "chat": dict(self._cumulative_token_usage["chat"]),
+                "total": dict(self._cumulative_token_usage["total"]),
+            }
+
+    def reset_cumulative_token_usage(self) -> Dict[str, Dict[str, int]]:
+        """清零累计值 (前端重置按钮 / 调试用)。"""
+        with self._token_usage_lock:
+            for bucket in ("build", "chat", "total"):
+                for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    self._cumulative_token_usage[bucket][k] = 0
+        self._save_cumulative_token_usage()
+        self._invalidate_dashboard_caches()
+        return self.get_cumulative_token_usage()
 
     def _subgraph_result_to_dict(self, result) -> Dict[str, Any]:
         """转换实体子图结果。

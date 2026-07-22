@@ -367,6 +367,13 @@ class MemorySystem:
         self._pending_entities: List[MemoryUnit] = []
         self._all_events: List[MemoryUnit] = []
         self._all_entities: List[MemoryUnit] = []
+        # 本次构建的抽取/去重统计 (供前端展示)
+        self._extraction_stats: Dict[str, int] = {
+            "entities_extracted": 0,
+            "entities_deduped": 0,
+            "events_extracted": 0,
+            "events_deduped": 0,
+        }
         self._last_session_boundary_changed = False
         self._processed_session_ids: Set[str] = set()
         self._processed_similarity_pairs: Set[Tuple[str, str]] = set()
@@ -876,7 +883,12 @@ class MemorySystem:
         if not entity_units:
             return
 
+        # 累加本次抽取/去重统计
+        self._extraction_stats["entities_extracted"] += len(entity_units)
         deduplicated = self._entity_dedup.deduplicate(entity_units)
+        self._extraction_stats["entities_deduped"] += max(
+            0, len(entity_units) - len(deduplicated)
+        )
         entity_space = self._naming.knowledge_entity(self._root)
         for entity_unit in deduplicated:
             self._semantic_map.add_unit(
@@ -947,7 +959,12 @@ class MemorySystem:
         if not event_units:
             return
 
+        # 累加本次抽取/去重统计
+        self._extraction_stats["events_extracted"] += len(event_units)
         deduplicated = self._event_dedup.deduplicate(event_units)
+        self._extraction_stats["events_deduped"] += max(
+            0, len(event_units) - len(deduplicated)
+        )
         event_space = self._naming.episodic_event(self._root)
         for event_unit in deduplicated:
             self._semantic_map.add_unit(
@@ -1250,6 +1267,9 @@ class MemorySystem:
         self._processed_session_ids.add(session.session_id)
         logger.info(f"Built high-level memory for session {session.session_id}")
 
+        # 标记 system 脏,以便 PersistenceManager.auto_save 可触发持久化
+        self._dirty = True
+
         self._build_similarity_edges_for_units(sorted_units)
 
     def build_high_level(self, mode: str = "auto", skip_summary: bool = False) -> BuildReport:
@@ -1272,6 +1292,9 @@ class MemorySystem:
         start_time = datetime.now(timezone.utc)
         self._auto_save_paused = True
         self._build_warnings.clear()
+        # 重置本次构建的抽取/去重统计
+        for k in self._extraction_stats:
+            self._extraction_stats[k] = 0
 
         try:
             self._ensure_layout()
@@ -1637,6 +1660,26 @@ class MemorySystem:
             sessions_processed += 1
             total_units_processed += len(current_session_units)
 
+        # === 兜底: build 完成后强制 flush + save ===
+        # MilvusUnitStore.upsert_units 只是把 unit 加到 _dirty_units 缓冲,
+        # 必须调用 flush() 才会真正写入 Milvus. PersistenceManager.save_full
+        # 只写 snapshot.json, 不会自动 flush Milvus, 所以这里手动触发.
+        try:
+            unit_store = getattr(self._semantic_map, "_store", None)
+            if unit_store is not None and hasattr(unit_store, "flush"):
+                unit_store.flush()
+                logger.info("Build: Milvus unit_store flushed")
+        except Exception as _e:
+            logger.warning("Build: Milvus flush failed: %s", _e)
+
+        # 触发一次全量持久化(写 snapshot.json / Neo4j / graph)
+        try:
+            if getattr(self, "_persistence", None) is not None:
+                self._persistence.schedule_save(delay_seconds=0)
+                logger.info("Build: snapshot save scheduled")
+        except Exception as _e:
+            logger.warning("Build: snapshot save schedule failed: %s", _e)
+
         self._dirty = False
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
 
@@ -1680,6 +1723,10 @@ class MemorySystem:
             return
 
         deduplicated = self._entity_dedup.deduplicate(self._all_entities)
+        # 累加跨 session 去重
+        self._extraction_stats["entities_deduped"] += max(
+            0, len(self._all_entities) - len(deduplicated)
+        )
         if len(deduplicated) < len(self._all_entities):
             entity_space = self._naming.knowledge_entity(self._root)
             existing_uids = set()
@@ -1714,6 +1761,10 @@ class MemorySystem:
             return
 
         deduplicated = self._event_dedup.deduplicate(self._all_events)
+        # 累加跨 session 去重
+        self._extraction_stats["events_deduped"] += max(
+            0, len(self._all_events) - len(deduplicated)
+        )
         if len(deduplicated) < len(self._all_events):
             event_space = self._naming.episodic_event(self._root)
             existing_uids = set()
@@ -2040,13 +2091,8 @@ class MemorySystem:
             self._pending_units.clear()
             self._pending_events.clear()
             self._pending_entities.clear()
-            self._all_events.clear()
-            self._all_entities.clear()
             self._async_check_scheduled = False
             self._last_async_reasoning = ""
-        self._processed_session_ids.clear()
-        self._processed_similarity_pairs.clear()
-        self._insertion_order.clear()
         self._dirty = False
 
     def save(self, storage_path: Optional[str] = None) -> "SaveResult":
@@ -2166,6 +2212,32 @@ class MemorySystem:
 
     def _rebuild_vector_index(self, units: List[MemoryUnit]) -> None:
         self._p_svc._rebuild_vector_index(units)
+
+    def get_fact_stats(self) -> Dict[str, int]:
+        """高阶事实统计: 实体数、事件数、本次抽取/去重数。
+
+        供前端在 build 高阶记忆后展示"抽取出多少实体/事件、重复未入库多少"。
+        """
+        entity_count = len(self._all_entities)
+        event_count = len(self._all_events)
+        try:
+            entity_space = self._naming.knowledge_entity(self._root)
+            event_space = self._naming.episodic_event(self._root)
+            entity_count = max(
+                entity_count,
+                len(self._semantic_map.get_units_in_spaces([entity_space])),
+            )
+            event_count = max(
+                event_count,
+                len(self._semantic_map.get_units_in_spaces([event_space])),
+            )
+        except Exception:
+            pass
+        return {
+            "entity_count": entity_count,
+            "event_count": event_count,
+            **self._extraction_stats,
+        }
 
     @property
     def persistence(self) -> Optional["PersistenceManager"]:

@@ -7,40 +7,42 @@ occurrence as a known canonical event candidate.
 # LLM prompt for pairwise event matching with confidence scoring.
 # Inputs: new event details and list of candidate canonical events.
 # Output: JSON with matched boolean, canonical_id, confidence, reasoning.
-EVENT_MATCH_JUDGE_PROMPT = """You are an expert in coreference resolution and event matching.
+EVENT_MATCH_JUDGE_PROMPT = """你是核心指代消解与事件匹配专家。
 
-Given a newly extracted event and a list of candidate canonical events from the knowledge graph, determine whether the new event refers to the same real-world event as one of the candidates.
+给定一个新抽取的事件和一组候选规范事件，判断新事件是否指代与某候选相同的现实世界事件。
 
-## New Event
-Name: {new_event_name}
-Description: {new_event_description}
-Participants: {new_participants}
-Time: {new_time}
-Facts: {new_facts}
+## 新事件
+名称: {new_event_name}
+描述: {new_event_description}
+参与者: {new_participants}
+时间: {new_time}
+事实: {new_facts}
 
-## Candidate Canonical Events
+## 候选规范事件
 {candidates}
 
-## Instructions
-1. Compare the new event with each candidate carefully.
-2. Consider: event name similarity, description overlap, participant overlap, temporal proximity, and location consistency.
-3. If the new event clearly refers to the same real-world event as a candidate, select that candidate.
-4. If the new event is distinct from all candidates, indicate no match.
-5. Events from different sessions may describe the same real-world event from different perspectives.
+## 任务说明
+1. 将新事件与每个候选仔细对比。
+2. 综合考虑：事件名称相似度、描述重叠度、参与者重叠度、时间邻近性、地点一致性。
+3. 若新事件明显指代与某候选相同的现实事件，选出该候选。
+4. 若新事件与所有候选均不同，输出无匹配。
+5. 不同会话可能从不同视角描述同一现实事件。
+6. 名称比较时注意中英文别名/简称差异。
 
-## Output Format
-Return a JSON object:
+## 输出格式
+返回 JSON 对象：
 ```json
 {{
-    "matched_index": <integer or null>,
-    "confidence": <float between 0.0 and 1.0>,
-    "canonical_name_suggestion": <string or null>,
-    "reasoning": "<brief explanation>"
+    "matched_index": <整数或 null>,
+    "confidence": <0.0~1.0 之间的浮点数>,
+    "canonical_name_suggestion": <字符串或 null>,
+    "reasoning": "<简要说明>"
 }}
 ```
 
-- `matched_index`: 0-based index of the matched candidate, or null if no match
-- `confidence`: your confidence in the match decision (0.0 = no confidence, 1.0 = absolute certainty)
-- `canonical_name_suggestion`: suggested canonical name if merging (or null to keep existing)
-- `reasoning`: brief explanation of your decision
+字段说明：
+- `matched_index`：匹配候选的 0-based 索引，无匹配则为 null
+- `confidence`：对该匹配决策的置信度（0.0 = 无信心，1.0 = 绝对确定）
+- `canonical_name_suggestion`：若合并，建议的规范名称（或 null 保持原名）
+- `reasoning`：决策的简要说明
 """

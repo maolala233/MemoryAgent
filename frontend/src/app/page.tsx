@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/layout/AppShell";
 import { Icon } from "@/components/shared/Icon";
 import { Loading } from "@/components/shared/Loading";
 import { Pill } from "@/components/shared/Pill";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { ConfirmDialog } from "@/components/shared/ConfirmDialog";
 import { api, ApiError } from "@/services/api";
 import type { MandolStatsResponse, MandolUnitInfo, ExternalStoreStatus } from "@/types";
 
@@ -123,6 +124,30 @@ export default function DashboardPage() {
   const [external, setExternal] = useState<ExternalStoreStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [clearTarget, setClearTarget] = useState<null | {
+    key: string;
+    title: string;
+    message: string;
+    endpoint: string;
+    danger?: boolean;
+  }>(null);
+  const [clearing, setClearing] = useState(false);
+  const [toast, setToast] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const refreshStats = useCallback(async () => {
+    try {
+      const s = await api.get<MandolStatsResponse>("mandol/stats/quick");
+      setStats(s as unknown as MandolStatsResponse);
+      const ext = await api.get<ExternalStoreStatus>("mandol/external-store-status");
+      setExternal(ext);
+      const units = await api.get<{ total: number; items: MandolUnitInfo[] }>(
+        "mandol/units?limit=8"
+      );
+      setRecentUnits(units.items || []);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -148,6 +173,61 @@ export default function DashboardPage() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const handleConfirmClear = useCallback(async () => {
+    if (!clearTarget) return;
+    setClearing(true);
+    try {
+      // 清空"所有"是后台任务, 提交后立即返回 running;
+      // 其他细粒度清空是同步接口, 等待返回即可。
+      if (clearTarget.endpoint === "clear-everything") {
+        await api.post<{ status: string; message?: string }>(
+          "mandol/clear-everything",
+          {}
+        );
+        // 轮询 clear-status 直到 completed / failed
+        const startedAt = Date.now();
+        const poll = async (): Promise<{ status: string; message: string }> => {
+          const r = await api.get<{
+            status: string;
+            message: string;
+            elapsed_seconds: number;
+          }>("mandol/clear-status");
+          if (r.status === "completed" || r.status === "failed") return r;
+          if (Date.now() - startedAt > 120_000) {
+            return { status: "failed", message: "清空超时(>120s)" };
+          }
+          await new Promise((res) => setTimeout(res, 1000));
+          return poll();
+        };
+        const final = await poll();
+        if (final.status === "completed") {
+          setToast({ kind: "success", text: `已清空：${clearTarget.title}\n${final.message}` });
+        } else {
+          setToast({ kind: "error", text: `清空失败：${final.message}` });
+        }
+      } else {
+        await api.post<{ status: string; message?: string }>(
+          `mandol/${clearTarget.endpoint}`,
+          {}
+        );
+        setToast({ kind: "success", text: `已清空：${clearTarget.title}` });
+      }
+      setClearTarget(null);
+      await refreshStats();
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.detail : String(err);
+      setToast({ kind: "error", text: `清空失败：${msg}` });
+    } finally {
+      setClearing(false);
+    }
+  }, [clearTarget, refreshStats]);
 
   const quickActions = [
     { icon: "search", title: "记忆检索", desc: "多策略全息检索", href: "/search" },
@@ -179,7 +259,7 @@ export default function DashboardPage() {
                 <StatCard icon="hub" label="记忆空间" value={stats.total_spaces || 0} sub="总计" accent="info" href="/spaces" />
                 <StatCard icon="person" label="实体" value={stats.entity_count || 0} sub="已提取" accent="success" href="/entities" />
                 <StatCard icon="event" label="事件" value={stats.event_count || 0} sub="已提取" accent="warning" href="/events" />
-                <StatCard icon="summarize" label="摘要" value={stats.summary_count || 0} sub="已生成" accent="primary" href="/build" />
+                <StatCard icon="summarize" label="摘要" value={stats.summary_count || 0} sub="已生成" accent="primary" href="/summaries" />
                 <StatCard icon="account_tree" label="基础记忆" value={stats.base_memory_count || 0} sub="图谱节点" accent="default" href="/graph" />
               </section>
 
@@ -372,10 +452,249 @@ export default function DashboardPage() {
                   />
                 )}
               </section>
+
+              {/* ── 数据管理（全宽） ── */}
+              <section className="bg-surface border border-border rounded-2xl p-5">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-xl bg-error/10 text-error flex items-center justify-center">
+                    <Icon name="delete_sweep" filled className="text-[20px]" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-body-lg font-bold text-on-surface">数据管理</h3>
+                    <p className="text-label-md text-on-surface-variant">
+                      按类别清空记忆数据，操作不可恢复
+                    </p>
+                  </div>
+                </div>
+
+                {(() => {
+                  const unitCount = (stats?.total_units as number) || 0;
+                  const spaceCount = (stats?.total_spaces as number) || 0;
+                  const entityCount = (stats?.entity_count as number) || 0;
+                  const eventCount = (stats?.event_count as number) || 0;
+                  const neo4jNodes = external?.neo4j?.nodes ?? 0;
+                  const milvusRows = external?.milvus?.unit_count ?? 0;
+                  const items: Array<{
+                    key: string;
+                    icon: string;
+                    title: string;
+                    desc: string;
+                    count: number;
+                    countLabel: string;
+                    endpoint: string;
+                    message: string;
+                    disabled?: boolean;
+                    disabledReason?: string;
+                  }> = [
+                    {
+                      key: "units",
+                      icon: "memory",
+                      title: "记忆单元",
+                      desc: "Milvus 向量 + Mandol 内存中的所有单元",
+                      count: unitCount,
+                      countLabel: "单元",
+                      endpoint: "clear-units",
+                      message: `将清空 ${unitCount} 个记忆单元及其向量索引，实体/事件节点保留。`,
+                    },
+                    {
+                      key: "spaces",
+                      icon: "hub",
+                      title: "记忆空间",
+                      desc: "所有 Mandol 空间（须先清空记忆单元）",
+                      count: spaceCount,
+                      countLabel: "空间",
+                      endpoint: "clear-spaces",
+                      message: `将清空 ${spaceCount} 个记忆空间。`,
+                      disabled: unitCount > 0,
+                      disabledReason: "请先清空记忆单元",
+                    },
+                    {
+                      key: "entities",
+                      icon: "person",
+                      title: "实体",
+                      desc: "Neo4j 中的实体节点 + Mandol 实体集合",
+                      count: entityCount,
+                      countLabel: "实体",
+                      endpoint: "clear-entities",
+                      message: `将清空 ${entityCount} 个实体节点。`,
+                    },
+                    {
+                      key: "events",
+                      icon: "event",
+                      title: "事件",
+                      desc: "Neo4j 中的事件节点 + Mandol 事件集合",
+                      count: eventCount,
+                      countLabel: "事件",
+                      endpoint: "clear-events",
+                      message: `将清空 ${eventCount} 个事件节点。`,
+                    },
+                    {
+                      key: "summaries",
+                      icon: "summarize",
+                      title: "摘要",
+                      desc: "vault 文件 frontmatter 中的 summary 字段",
+                      count: 0,
+                      countLabel: "摘要",
+                      endpoint: "clear-summaries",
+                      message: "将清空所有 vault 文档 frontmatter 中的 summary 字段。",
+                    },
+                    {
+                      key: "base-memories",
+                      icon: "folder",
+                      title: "基础记忆",
+                      desc: "data/vault/imports/ 下的解析文件",
+                      count: 0,
+                      countLabel: "目录",
+                      endpoint: "clear-base-memories",
+                      message: "将删除 data/vault/imports/ 下所有解析后的 md 文件及子目录。",
+                    },
+                    {
+                      key: "neo4j",
+                      icon: "account_tree",
+                      title: "Neo4j",
+                      desc: "整个 Neo4j 图（节点 + 关系）",
+                      count: neo4jNodes,
+                      countLabel: "节点",
+                      endpoint: "clear-neo4j",
+                      message: `将清空 Neo4j 全部 ${neo4jNodes} 个节点。`,
+                    },
+                    {
+                      key: "milvus",
+                      icon: "database",
+                      title: "Milvus",
+                      desc: "整个 Milvus 向量集合",
+                      count: milvusRows,
+                      countLabel: "向量",
+                      endpoint: "clear-milvus",
+                      message: `将 drop Milvus 集合（约 ${milvusRows} 条向量）。`,
+                    },
+                  ];
+
+                  return (
+                    <>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {items.map((it) => {
+                          const disabled = !!it.disabled;
+                          return (
+                            <button
+                              key={it.key}
+                              type="button"
+                              disabled={disabled || clearing}
+                              onClick={() =>
+                                setClearTarget({
+                                  key: it.key,
+                                  title: `清空${it.title}`,
+                                  message: `${it.desc}\n\n${it.message}\n\n此操作不可恢复，请输入"确认"以继续。`,
+                                  endpoint: it.endpoint,
+                                  danger: true,
+                                })
+                              }
+                              className={[
+                                "text-left p-4 rounded-xl border transition-all group relative",
+                                disabled
+                                  ? "border-border bg-surface-container-low opacity-50 cursor-not-allowed"
+                                  : "border-border bg-surface-container-low hover:bg-error/5 hover:border-error/40 cursor-pointer",
+                              ].join(" ")}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div
+                                  className={[
+                                    "w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0",
+                                    disabled
+                                      ? "bg-surface-container text-on-surface-variant"
+                                      : "bg-error/10 text-error group-hover:bg-error/15",
+                                  ].join(" ")}
+                                >
+                                  <Icon name={it.icon} filled className="text-[20px]" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-body-md font-bold text-on-surface truncate">
+                                    {it.title}
+                                  </p>
+                                  <p className="text-label-md text-on-surface-variant line-clamp-2">
+                                    {it.desc}
+                                  </p>
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <Pill size="sm" variant={disabled ? "default" : "warning"}>
+                                      {it.count} {it.countLabel}
+                                    </Pill>
+                                    {disabled && it.disabledReason && (
+                                      <span className="text-label-sm text-error">
+                                        {it.disabledReason}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t border-border flex items-center justify-between gap-3">
+                        <p className="text-label-md text-on-surface-variant">
+                          一键清空：清空记忆单元 + 记忆空间 + 实体 + 事件 + 摘要 + 基础记忆 + Neo4j + Milvus
+                        </p>
+                        <button
+                          type="button"
+                          disabled={clearing}
+                          onClick={() =>
+                            setClearTarget({
+                              key: "all",
+                              title: "清空所有数据",
+                              message:
+                                "将清空全部记忆数据（记忆单元、记忆空间、实体、事件、摘要、基础记忆、Neo4j、Milvus）。\n\n此操作不可恢复，请输入「确认」以继续。",
+                              endpoint: "clear-everything",
+                              danger: true,
+                            })
+                          }
+                          className="px-4 py-2 rounded-lg bg-error text-white text-body-md font-bold hover:opacity-90 transition-opacity flex items-center gap-2 disabled:opacity-50"
+                        >
+                          <Icon name="delete_forever" filled className="text-[18px]" />
+                          清空所有数据
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+              </section>
             </>
           )}
         </div>
       </div>
+
+      {/* ── 全局清空确认弹窗（需输入"确认"才能执行） ── */}
+      <ConfirmDialog
+        open={!!clearTarget}
+        title={clearTarget?.title || ""}
+        message={clearTarget?.message}
+        variant={clearTarget?.danger ? "danger" : "default"}
+        confirmLabel={clearing ? "执行中..." : "确认清空"}
+        requireText="确认"
+        onConfirm={handleConfirmClear}
+        onCancel={() => !clearing && setClearTarget(null)}
+      />
+
+      {/* ── 操作结果提示 ── */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-[110] max-w-md">
+          <div
+            className={[
+              "rounded-xl shadow-lg px-4 py-3 flex items-start gap-3 border",
+              toast.kind === "success"
+                ? "bg-success/10 border-success/30 text-success"
+                : "bg-error/10 border-error/30 text-error",
+            ].join(" ")}
+          >
+            <Icon
+              name={toast.kind === "success" ? "check_circle" : "error"}
+              filled
+              className="text-[20px] flex-shrink-0 mt-0.5"
+            />
+            <p className="text-body-md font-medium whitespace-pre-line">{toast.text}</p>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }

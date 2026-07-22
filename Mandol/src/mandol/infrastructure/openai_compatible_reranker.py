@@ -99,11 +99,6 @@ class OpenAICompatibleReranker(Reranker):
         """
         if not isinstance(query, str) or not query.strip() or not units:
             return []
-        if not self._token:
-            raise RuntimeError(
-                f"Rerank API token is required; set env {self._config.token_env} or pass token=..."
-            )
-
         documents: List[str] = []
         unit_order: List[MemoryUnit] = []
         for u in units:
@@ -131,12 +126,13 @@ class OpenAICompatibleReranker(Reranker):
         max_retries = int(os.getenv("MANDOL_RERANKER_MAX_RETRIES", "3"))
         base_delay = float(os.getenv("MANDOL_RERANKER_RETRY_DELAY", "2.0"))
 
-        url = f"{self._config.base_url.rstrip('/')}{self._config.api_path}"
+        url = _join_base_url_and_path(self._config.base_url, self._config.api_path)
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._token}",
             "X-Request-ID": str(uuid.uuid4()),
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
 
         last_exc: Optional[Exception] = None
         for attempt in range(1, max_retries + 1):
@@ -236,3 +232,13 @@ class OpenAICompatibleReranker(Reranker):
 # Backward compatible aliases
 UniApiRerankConfig = OpenAICompatibleRerankConfig
 UniApiReranker = OpenAICompatibleReranker
+
+
+def _join_base_url_and_path(base_url: str, api_path: str) -> str:
+    base = str(base_url or "").rstrip("/")
+    path = str(api_path or "").strip() or "/rerank"
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if base.endswith("/v1") and path.startswith("/v1/"):
+        path = path[3:]
+    return f"{base}{path}"

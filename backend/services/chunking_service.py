@@ -196,6 +196,11 @@ class ChunkingService:
         1. 标准 markdown 标题: # / ## / ### ...
         2. **加粗行**(Word/PDF 导出常用): **（一）产品参数配置** / **1. xxx**
         3. 中文编号标题: 第N章 / （一） / (1) / 1.
+
+        关键修复 (标题继承):
+        - 标题行被识别后, 立即作为新 section body 的首行(同时保留为 section.title),
+          保证 chunk 的正文里**能看到**自己的标题, 不丢失上下文
+        - 第一个未识别的 preamble(前言/目录)仍归入 "Introduction" 段
         """
         sections: List[tuple] = []
         current_title = "Introduction"
@@ -246,13 +251,24 @@ class ChunkingService:
                     sections.append((current_title, "\n".join(buffer).strip()))
                     buffer = []
                 current_title = heading
+                # 标题继承修复: 把标题行作为新 section body 的首行,
+                # 保证 chunk 正文里能看到自己的标题 (LLM 召回后不会丢上下文)
+                buffer = [line.rstrip()]
             else:
                 buffer.append(line)
         if buffer:
             sections.append((current_title, "\n".join(buffer).strip()))
         if not sections:
             sections = [("Document", text)]
-        return sections
+        # 兜底: 校验每个 chunk 的 body 是否包含自己的 title (允许 title 出现在首行/任意位置)
+        # 跳过 "Introduction" / "Document" 这种无明确标题的占位段
+        fixed: List[tuple] = []
+        for title, body in sections:
+            if title not in ("Introduction", "Document") and title and title not in body:
+                # 仍然修复: 在 body 开头显式补一行标题, 哪怕正文里没有, 也确保 LLM 检索时能看到
+                body = f"【{title}】\n" + body
+            fixed.append((title, body))
+        return fixed
 
 
 chunking_service = ChunkingService()

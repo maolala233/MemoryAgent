@@ -57,6 +57,15 @@ class PersistenceManager:
         try:
             self._engine.ensure_directories()
 
+            try:
+                self._system.semantic_map.get_store().flush()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Unit store flush before persistence save failed: %s", exc)
+            try:
+                self._system._graph_store.flush()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Graph store flush before persistence save failed: %s", exc)
+
             units = self._system.semantic_map.list_units()
             spaces = self._system.semantic_map.list_spaces()
             edges = self._extract_graph_edges()
@@ -311,6 +320,16 @@ class MemorySystemStateLoader:
         system._session_manager.reset()
         for session in sessions:
             system._session_manager._sessions.append(session)
+
+        try:
+            entity_space = system._naming.knowledge_entity(system._root)
+            event_space = system._naming.episodic_event(system._root)
+            system._all_entities.clear()
+            system._all_entities.extend(system.semantic_map.get_units_in_spaces([entity_space]))
+            system._all_events.clear()
+            system._all_events.extend(system.semantic_map.get_units_in_spaces([event_space]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to restore fact lists after persistence load: %s", exc)
 
         self._pm.rebuild_indexes(units)
 

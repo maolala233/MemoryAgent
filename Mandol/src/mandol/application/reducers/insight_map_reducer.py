@@ -19,74 +19,74 @@ from ..session_manager import Session
 
 logger = logging.getLogger(__name__)
 
-INSIGHT_MAP_SYSTEM_PROMPT = """You are a deep analysis expert. Generate high-level insights based on the following session summaries through reflection, analysis, and reasoning.
-And identify the most core summary UIDs that form this insight.
+INSIGHT_MAP_SYSTEM_PROMPT = """你是一名深度分析专家。请基于以下会话摘要进行反思、分析、推理，生成高层级洞察。
+并识别形成该洞察的最核心摘要 UID。
 
-Summary information:
+摘要信息：
 {summaries_text}
 
-**Step 1: Thinking Process (no need to reflect in final output)**
-1. Analyze each summary category: episodic, procedural, knowledge, emotional
-2. Identify cross-category patterns and connections
-3. Draw causal relationships between events or behaviors
-4. Generate actionable insights based on patterns
+**第 1 步：思考过程（最终输出无需反映）**
+1. 分析每个摘要类别：情节性、程序性、知识性、情感性
+2. 识别跨类别的模式与关联
+3. 推导事件或行为之间的因果关系
+4. 基于模式生成可操作的洞察
 
-**Step 2: Final Output**
+**第 2 步：最终输出**
 
-Please return the insight analysis in the following JSON format:
+请按以下 JSON 格式返回洞察分析：
 {{
-    "key_source_uids": ["List of the most critical source summary UIDs"],
+    "key_source_uids": ["最核心的源摘要 UID 列表"],
     "insights": {{
-        "pattern_recognition": ["Cross-summary patterns and trends identified"],
-        "causal_relationships": ["Discovered causal relationship chains"],
-        "predictive_insights": ["Predictions and trend judgments based on patterns"],
-        "behavioral_characteristics": ["Deep behavioral characteristics of users or systems"],
-        "optimization_recommendations": ["Specific improvement suggestions based on insights"],
-        "risk_warnings": ["Potential problems and risk points"]
+        "pattern_recognition": ["识别出的跨摘要模式与趋势"],
+        "causal_relationships": ["发现的因果关系链"],
+        "predictive_insights": ["基于模式的预测与趋势判断"],
+        "behavioral_characteristics": ["用户或系统的深层行为特征"],
+        "optimization_recommendations": ["基于洞察的具体改进建议"],
+        "risk_warnings": ["潜在问题与风险点"]
     }}
 }}
 
-The insights should:
-1. Go beyond surface information of individual summaries
-2. Discover hidden patterns and associations
-3. Provide actionable recommendations
-4. Base reasoning on evidence
-5. Have predictive value
-6. Accurately identify the most important source UIDs
+洞察要求：
+1. 超越单个摘要的表面信息
+2. 发现隐藏的模式与关联
+3. 提供可操作的建议
+4. 推理基于证据
+5. 具有预测价值
+6. 准确识别最重要的源 UID
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
-INSIGHT_REDUCE_SYSTEM_PROMPT = """You are an insight integration expert. Merge multiple session insights into a global insight to maintain a coherent, non-redundant global understanding.
+INSIGHT_REDUCE_SYSTEM_PROMPT = """你是一名洞察整合专家。请将多个会话洞察合并为全局洞察，以保持连贯、不冗余的全局理解。
 
-**Step 1: Thinking Process (no need to reflect in final output)**
-1. Compare insights across sessions for common themes
-2. Identify which insights represent genuine patterns vs one-off observations
-3. Prioritize insights with highest confidence and broadest application
-4. Preserve diversity in insight types
+**第 1 步：思考过程（最终输出无需反映）**
+1. 比较各会话的洞察，寻找共同主题
+2. 识别哪些洞察是真正的模式，哪些是一次性观察
+3. 优先保留置信度最高、应用面最广的洞察
+4. 保持洞察类型的多样性
 
-**Step 2: Final Output**
+**第 2 步：最终输出**
 
-Merge principles:
-1. Preserve genuinely important insights even if from old sessions
-2. Merge overlapping or redundant insights into more comprehensive ones
-3. Add genuinely new insights from new sessions
-4. Maintain diversity - don't over-merge everything into few points
-5. Keep insight text concise but informative
+合并原则：
+1. 即使是旧会话中真正重要的洞察也要保留
+2. 将重叠或冗余的洞察合并为更全面的洞察
+3. 加入新会话中真正新增的洞察
+4. 保持多样性，不要把所有内容都合并为少数几点
+5. 洞察文本要简洁但信息丰富
 
-Please return the merged global insight in the following JSON format:
+请按以下 JSON 格式返回合并后的全局洞察：
 {{
-    "key_source_session_ids": ["List of session IDs that contributed to this global insight"],
+    "key_source_session_ids": ["贡献此全局洞察的会话 ID 列表"],
     "insights": {{
-        "pattern_recognition": ["Cross-session patterns and trends identified"],
-        "causal_relationships": ["Discovered causal relationship chains"],
-        "predictive_insights": ["Predictions and trend judgments based on patterns"],
-        "behavioral_characteristics": ["Deep behavioral characteristics"],
-        "optimization_recommendations": ["Specific improvement suggestions"],
-        "risk_warnings": ["Potential problems and risk points"]
+        "pattern_recognition": ["识别出的跨会话模式与趋势"],
+        "causal_relationships": ["发现的因果关系链"],
+        "predictive_insights": ["基于模式的预测与趋势判断"],
+        "behavioral_characteristics": ["深层行为特征"],
+        "optimization_recommendations": ["具体改进建议"],
+        "risk_warnings": ["潜在问题与风险点"]
     }}
 }}
 
-Generate a response in JSON format. All textual content within the JSON must be in English."""
+输出 JSON 格式。所有 JSON 内的文本内容请使用中文。"""
 
 INSIGHT_TYPES = [
     "pattern_recognition",
@@ -220,7 +220,7 @@ class InsightMapReducer:
             )
         except json.JSONDecodeError:
             insight = self._create_fallback_insight(session_id, source_summary_uids)
-        except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError, ValueError, AttributeError) as e:
             logger.error("Insight map phase failed: %s", e)
             insight = self._create_fallback_insight(session_id, source_summary_uids)
 
@@ -357,7 +357,7 @@ All session IDs: {all_session_ids}"""
             return result
         except json.JSONDecodeError:
             return self._merge_insights_fallback(session_insights, all_session_ids)
-        except (ConnectionError, TimeoutError, OSError, RuntimeError) as e:
+        except (ConnectionError, TimeoutError, OSError, RuntimeError, ValueError, AttributeError) as e:
             logger.error("Insight reduce failed: %s", e)
             return self._merge_insights_fallback(session_insights, all_session_ids)
 
@@ -367,6 +367,15 @@ All session IDs: {all_session_ids}"""
         session_ids: List[str],
     ) -> InsightResult:
         data = json.loads(strip_json_fences(response))
+
+        # 防御:LLM 偶尔返回 list,统一规整为 dict
+        if isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                data = data[0]
+            else:
+                data = {"insights": {}}
+        if not isinstance(data, dict):
+            data = {"insights": {}}
 
         key_source_sessions = data.get("key_source_session_ids", session_ids)
         if not isinstance(key_source_sessions, list):

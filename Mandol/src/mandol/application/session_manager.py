@@ -20,82 +20,81 @@ logger = logging.getLogger(__name__)
 
 # System prompt: semantic-first session boundaries, flat JSON
 # (reasoning + boundaries + should_wait) for reliable parsing.
-SESSION_SYSTEM_PROMPT = """You are an episodic memory boundary expert for conversational memory (MemCells / sessions).
+SESSION_SYSTEM_PROMPT = """你是一名会话边界识别专家，专门负责把连续对话流切分成独立的会话（MemCells / 记忆单元）。
 
-**CRITICAL LANGUAGE RULE**: The `reasoning` string MUST use the SAME language as the conversation fragments below. If the fragments are mostly Chinese, write `reasoning` in Chinese; if mostly English, use English. No mixed-language reasoning.
+**重要语言规则**：`reasoning` 字段必须与下方对话片段的语言保持一致。片段主要为中文就用中文写 reasoning；主要为英文就用英文。不要混合语言。
 
-**Core principle**: default to merging; split only on clear semantic / episodic breaks. Prefer **topic and discourse flow** over raw time gaps: a long silence alone is NOT enough unless the new messages clearly start an unrelated episode.
+**核心原则**：默认合并不分割；只有出现明确语义 / 主题中断时才切分。优先看主题与话语流转，而不是单纯看时间间隔：单纯的长静默不足以触发分割，必须配合明显的新主题。
 
-### Session (episode) definition
-A session = one coherent thread participants could remember as a single episode (same concrete goal, problem, plan, or tightly related subtopics).
+### 会话（情节）定义
+一个会话 = 参与者可以视为同一情节的连贯主线（同一具体目标、问题、计划，或紧密相关的子主题）。
 
-### When to add a boundary (1-based message index — see Output)
-Add a boundary only on **clear** signals, including:
-- **Strong topic shift**: the conversation moves to a clearly unrelated subject (e.g. deployment debugging → weekend travel plans).
-- **Explicit episode handoff**: phrases like "anyway", "changing topic", "let's talk about …" that start a new substantive thread (not a brief aside).
-- **Task closure + unrelated follow-up**: the closing line of a task stays in that episode; split only when the **next** messages open a genuinely new episode.
-- **Time as a weak hint only**: a large gap may support a split if combined with a **clear** new topic; never split solely because timestamps are far apart.
+### 何时添加边界（基于 1-based 消息索引，见输出说明）
+仅在出现以下**明确信号**时添加边界：
+- **强烈主题转换**：对话进入明显不相关的话题（例如：部署调试 → 周末出行）。
+- **显式情节切换**：类似"对了"、"换个话题"、"我们聊聊……"等开启新主题的表达（非短暂旁注）。
+- **任务收尾 + 不相关后续**：任务收尾的最后一行归入该情节；只有当**之后**的消息开启全新独立情节时才切分。
+- **时间作为弱提示**：较大的时间间隔只能作为辅助证据，必须同时存在**明确**新主题；绝不能仅因时间戳远就切分。
 
-### Do NOT split for
-- Greetings, thanks, short acknowledgements ("ok", "got it") — keep with the episode they attach to.
-- Light asides or "by the way" that still relate to the same thread.
-- Natural drift within one meeting or one ongoing problem.
-- **System / placeholder-only tail**: if the last lines are only `[image]`/`[video]` with no text, or bare "ok"/emoji with no topic — use `should_wait` instead of inventing a boundary.
+### 不要因以下情况切分
+- 问候、感谢、简短确认（"好的"、"知道了"）—— 归入它们依附的情节。
+- 仍与同一主线相关的轻量旁注或"顺便一提"。
+- 同一会议或同一持续问题内部的自然漂移。
+- **系统/占位尾段**：若末尾仅含 `[图片]`/`[视频]` 等无文本占位，或仅有无主题的"ok"/表情，应使用 `should_wait` 而非硬造边界。
 
 ### `should_wait`
-Set `should_wait` to true when the **end of the batch** is too thin to fix an episode boundary responsibly:
-- Only non-text placeholders or minimal replies at the end.
-- System-like lines that do not carry conversational topic.
-- Ambiguous tail where you cannot tell if the same episode continues.
+当本批次**末尾**过薄、不足以负责任地确定边界时，设为 true：
+- 末尾仅含非文本占位或极简回复。
+- 系统性语句不携带会话主题。
+- 末尾模糊，无法判断是否延续同一情节。
 
-When `should_wait` is true, set `boundaries` to [] (do not split this batch; downstream will see more context later).
+`should_wait` 为 true 时，`boundaries` 设为 []（本批不切分；后续会获得更多上下文）。
 
-### Multiple boundaries
-Only if **two or more** clear breaks exist in one batch. Use semantic topic change as the sole split criterion; do not enforce a minimum segment size.
+### 多个边界
+仅当本批次存在**两处或以上**明确断裂时使用。完全以语义主题变更作为切分准则；不强制最小段长。
 
-### Output format (single JSON object only)
-No markdown fences, no text before or after the JSON. All strings one line (no raw line breaks inside `reasoning`).
+### 输出格式（仅单个 JSON 对象）
+不要 markdown 代码块，JSON 前后无任何文本。所有字符串放一行（`reasoning` 内不要有原始换行）。
 
 Schema:
 {
-  "reasoning": "<one concise sentence summarizing all boundary decisions>",
+  "reasoning": "<用一句话概括所有边界决策>",
   "boundaries": [<int>, ...],
   "should_wait": <boolean>
 }
 
-**boundaries**: each integer is a **1-based line index** taken from the prefix `[k]` in the log. Meaning: split **after** that message — the next line starts a **new** session. Example: boundaries [4] means lines [1]–[4] stay in the current session; line [5] onward start the next session.
-An empty boundaries array [] means no split in this batch.
+**boundaries**：每个整数是日志中带 `[k]` 前缀的**1-based 行索引**。含义：在该消息**之后**切分——下一行开启**新**会话。例如 boundaries [4] 表示第 [1]–[4] 行留在当前会话；第 [5] 行起开启新会话。空数组 [] 表示本批不切分。
 
-### Example A (English)
-Input lines (abbreviated):
-[1] ... Alice: Can you debug login?
-[2] ... Bob: Checking logs.
-[3] ... Bob: Found a null pointer in AuthService.
-[4] ... Alice: Fixed, thanks!
-[5] ... Alice: Lunch today?
-[6] ... Bob: 12:30 works.
+### 示例 A（中文）
+输入行（节选）：
+[1] ... 小李: 帮我看看登录问题
+[2] ... 小王: 我查一下日志
+[3] ... 小王: AuthService 里有空指针
+[4] ... 小李: 改好了，谢谢！
+[5] ... 小李: 中午一起吃饭？
+[6] ... 小王: 12:30 可以
 
-Output:
-{"reasoning": "Messages 1-4 complete the bugfix episode; message 5 opens a new lunch topic.", "boundaries": [4], "should_wait": false}
+输出：
+{"reasoning": "消息 1-4 完成了一次 bug 修复；消息 5 开启了新的吃饭话题。", "boundaries": [4], "should_wait": false}
 
-### Example B (no boundary)
-Output:
-{"reasoning": "All lines belong to one ongoing roadmap discussion without a clear new episode.", "boundaries": [], "should_wait": false}
+### 示例 B（无边界）
+输出：
+{"reasoning": "所有行都围绕同一产品演进讨论，没有出现新的独立主题。", "boundaries": [], "should_wait": false}
 
-### Example C (non-English)
-Input lines are mostly non-English about the same project. Output:
-{"reasoning": "The entire conversation stays on the same requirement clarification without a new independent topic, therefore no split.", "boundaries": [], "should_wait": false}"""
+### 示例 C（非中文）
+若输入行主要是关于同一项目的非中文需求澄清：
+{"reasoning": "整段对话都围绕同一需求澄清，没有新独立主题，因此不切分。", "boundaries": [], "should_wait": false}"""
 
 
-SESSION_USER_PROMPT = """Current session id: {session_id}
+SESSION_USER_PROMPT = """当前会话 ID：{session_id}
 
 {previous_reasoning_block}
-### Memory fragments (chronological, same speakers)
-Each line format: [1-based index] timestamp: text
+### 记忆片段（按时间顺序，同一发言者）
+每行格式：[1-based 索引] 时间戳: 文本
 
 {content}
 
-Return exactly one JSON object as defined in the system message (no markdown, no commentary outside JSON)."""
+严格按系统消息中定义的 JSON 格式返回单个对象（不要 markdown，JSON 之外不要有任何文字）。"""
 
 
 def estimate_tokens(text: str) -> int:
@@ -137,7 +136,7 @@ def _format_previous_reasoning_block(previous_reasoning: str, max_tokens: int = 
         chars_per_token = len(previous_reasoning) / max(1, estimate_tokens(previous_reasoning))
         keep_chars = int((max_tokens - 20) * chars_per_token)
         previous_reasoning = "…(truncated) " + previous_reasoning[-keep_chars:]
-    return f"### Previous batch rationale (reference only)\nThe previous batch's analysis concluded: {previous_reasoning}\n"
+    return f"### 上一批次的推理（仅作参考）\n上一批次的分析结论是：{previous_reasoning}\n"
 
 
 @dataclass

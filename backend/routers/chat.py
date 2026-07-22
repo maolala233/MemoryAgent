@@ -760,6 +760,17 @@ async def _event_stream(req: StreamRequest) -> AsyncIterator[bytes]:
         thinking=full_thinking or None,
     )
 
+    # 6.5) 累计本次 chat 的 token 用量 (持久化到 token_usage.json, 重启不丢)
+    # 估算方式: input = msgs 拼接; output = 答案 + thinking
+    # 足够用于仪表盘监控真实开销, 无需调用方传 usage (流式不返回 usage)
+    try:
+        _prompt_text = "\n".join((m.get("content") or "") for m in msgs)
+        _prompt_tokens = messages_token_count(msgs) if msgs else estimate_tokens(_prompt_text)
+        _completion_tokens = estimate_tokens(full_text or "") + estimate_tokens(full_thinking or "")
+        mandol_service.add_chat_tokens(_prompt_tokens, _completion_tokens)
+    except Exception as _exc:  # noqa: BLE001
+        warn(f"累计 chat token 用量失败(忽略): {_exc}")
+
     # 7) 若用户要求把本轮问答存到指定空间
     save_to = req.save_to_space or sess.get("save_to_space") or ""
     saved_info: Dict[str, Any] = {}

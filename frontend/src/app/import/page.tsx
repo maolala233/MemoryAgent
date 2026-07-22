@@ -12,8 +12,8 @@ import type { ImportStep } from "@/hooks/useDocumentImport";
 const STEPS: { key: ImportStep; label: string; icon: string }[] = [
   { key: "upload", label: "上传文件", icon: "upload_file" },
   { key: "parse", label: "解析内容", icon: "text_snippet" },
-  { key: "convert", label: "生成记忆", icon: "transform" },
-  { key: "save", label: "完成", icon: "save" },
+  { key: "convert", label: "切片", icon: "transform" },
+  { key: "save", label: "生成记忆", icon: "auto_awesome" },
 ];
 
 // 中文类型映射（数据库里仍是英文枚举，仅 UI 翻译）
@@ -30,6 +30,35 @@ const STRATEGY_LABELS: Record<string, string> = {
   section: "按章节切分",
   size: "按固定长度切分",
 };
+
+function StatBox({
+  label,
+  value,
+  icon,
+  color = "primary",
+}: {
+  label: string;
+  value: number | string;
+  icon: string;
+  color?: "primary" | "info" | "success";
+}) {
+  const colorClass = {
+    primary: "bg-primary-fixed text-primary",
+    info: "bg-info/10 text-info",
+    success: "bg-success/10 text-success",
+  }[color];
+  return (
+    <div className="bg-surface-container-low border border-border rounded-lg p-3 flex items-center gap-3">
+      <div className={["w-10 h-10 rounded-full flex items-center justify-center shrink-0", colorClass].join(" ")}>
+        <Icon name={icon} className="text-[20px]" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-label-md text-on-surface-variant truncate">{label}</p>
+        <p className="text-body-lg font-bold text-on-surface">{value}</p>
+      </div>
+    </div>
+  );
+}
 
 function StepIndicator({
   current,
@@ -88,6 +117,7 @@ export default function ImportPage() {
     saved,
     isLoading,
     error,
+    buildStatus,
     uploadFile,
     parse,
     convert,
@@ -102,6 +132,14 @@ export default function ImportPage() {
     build_mandol: true,
   });
   const [savingStatus, setSavingStatus] = useState<string>("");
+  const [buildLog, setBuildLog] = useState<
+    { ts: number; level: "info" | "ok" | "err"; text: string }[]
+  >([]);
+  const [toast, setToast] = useState<{
+    type: "ok" | "err";
+    title: string;
+    detail?: string;
+  } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // 保存阶段持续显示进度文字（避免长时间静默让用户以为卡死）
@@ -120,6 +158,73 @@ export default function ImportPage() {
       clearTimeout(t3);
     };
   }, [step, isLoading]);
+
+  // 把后端实时构建状态写进日志 + toast
+  useEffect(() => {
+    if (!buildStatus) return;
+    setBuildLog((prev) => {
+      const last = prev[prev.length - 1];
+      const text = buildStatus.message || (buildStatus.status === "running" ? "正在构建..." : "");
+      if (!text) return prev;
+      if (last && last.text === text) return prev; // 去重
+      const level: "info" | "ok" | "err" =
+        buildStatus.status === "completed"
+          ? "ok"
+          : buildStatus.status === "failed"
+            ? "err"
+            : "info";
+      const next = [
+        ...prev,
+        { ts: Date.now(), level, text },
+      ];
+      // 最多保留 50 条
+      return next.slice(-50);
+    });
+  }, [buildStatus]);
+
+  // 构建结束 -> 弹提醒
+  useEffect(() => {
+    if (!buildStatus) return;
+    if (buildStatus.status === "completed") {
+      setToast({
+        type: "ok",
+        title: "高阶记忆构建完成",
+        detail: `耗时 ${buildStatus.elapsed_seconds}s, 可前往「记忆库」开始对话。`,
+      });
+    } else if (buildStatus.status === "failed") {
+      setToast({
+        type: "err",
+        title: "高阶记忆构建失败",
+        detail: buildStatus.message,
+      });
+    }
+  }, [buildStatus?.status]);
+
+  // convert 完成后, 如果开了 build_mandol, 自动保存
+  const autoSaveTriggered = useRef(false);
+  useEffect(() => {
+    if (
+      step === "save" &&
+      converted &&
+      upload &&
+      !saved &&
+      convertOpts.build_mandol &&
+      !isLoading &&
+      !autoSaveTriggered.current
+    ) {
+      autoSaveTriggered.current = true;
+      setBuildLog([{ ts: Date.now(), level: "info", text: "已触发保存, 后台开始构建..." }]);
+      save(
+        upload.file_id,
+        converted.memory_files,
+        true,
+        convertOpts.project_id || undefined,
+      );
+    }
+    if (step === "upload") {
+      autoSaveTriggered.current = false;
+    }
+  }, [step, converted, upload, saved, isLoading, convertOpts.build_mandol, convertOpts.project_id, save]);
 
   const onFile = useCallback(
     (file: File) => {
@@ -157,7 +262,7 @@ export default function ImportPage() {
   };
 
   return (
-    <AppShell title="文档导入" subtitle="PDF / DOCX / MD / TXT → 基础记忆">
+    <AppShell title="文档导入" subtitle="PDF / DOCX / MD / TXT → 记忆">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <div className="w-full px-panel-padding py-8 space-y-6">
           {/* Step indicator */}
@@ -420,55 +525,199 @@ export default function ImportPage() {
             </div>
           )}
 
-          {/* Step 4: Save (long-running with progress text) */}
-          {(step === "save" && isLoading) && (
+          {/* Step 4: 生成记忆 (save + build 合在一起, 实时显示进度+日志+抽取结果) */}
+          {step === "save" && (
             <div className="bg-surface border border-border rounded-xl p-6 space-y-4">
-              <div className="text-center">
-                <div className="w-16 h-16 rounded-full bg-primary-fixed flex items-center justify-center mx-auto mb-4">
+              {/* ---- 顶部状态行 ---- */}
+              <div className="flex items-center gap-3 flex-wrap">
+                <div
+                  className={[
+                    "w-12 h-12 rounded-full flex items-center justify-center",
+                    isLoading || buildStatus?.status === "running"
+                      ? "bg-primary-fixed"
+                      : buildStatus?.status === "completed"
+                        ? "bg-success/10"
+                        : buildStatus?.status === "failed"
+                          ? "bg-error/10"
+                          : "bg-surface-container-low",
+                  ].join(" ")}
+                >
                   <Icon
-                    name="hourglass_top"
-                    className="text-[32px] text-primary animate-pulse"
+                    name={
+                      isLoading || buildStatus?.status === "running"
+                        ? "hourglass_top"
+                        : buildStatus?.status === "completed"
+                          ? "check_circle"
+                          : buildStatus?.status === "failed"
+                            ? "error"
+                            : "auto_awesome"
+                    }
+                    filled
+                    className={[
+                      "text-[28px]",
+                      isLoading || buildStatus?.status === "running"
+                        ? "text-primary animate-pulse"
+                        : buildStatus?.status === "completed"
+                          ? "text-success"
+                          : buildStatus?.status === "failed"
+                            ? "text-error"
+                            : "text-on-surface-variant",
+                    ].join(" ")}
                   />
                 </div>
-                <h3 className="text-body-lg font-bold text-on-surface mb-1">
-                  正在保存记忆…
-                </h3>
-                <p className="text-body-md text-on-surface-variant">
-                  {savingStatus || "请稍候…"}
-                </p>
-                {!convertOpts.build_mandol && (
-                  <p className="text-label-md text-outline mt-1">
-                    已跳过 Mandol 高阶记忆构建，仅写入基础记忆文件
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-body-lg font-bold text-on-surface">
+                    {buildStatus?.status === "completed"
+                      ? "生成记忆完成"
+                      : buildStatus?.status === "failed"
+                        ? "生成记忆失败"
+                        : isLoading
+                          ? "正在保存并构建高阶记忆…"
+                          : saved
+                            ? "已生成基础记忆"
+                            : "准备生成记忆"}
+                  </h3>
+                  <p className="text-body-md text-on-surface-variant break-all">
+                    {buildStatus?.message || savingStatus || "请稍候…"}
                   </p>
+                  {buildStatus && buildStatus.elapsed_seconds > 0 && (
+                    <p className="text-label-sm text-outline mt-0.5">
+                      已运行 {buildStatus.elapsed_seconds}s
+                      {buildStatus.status === "running"}
+                    </p>
+                  )}
+                </div>
+                {buildStatus && buildStatus.status !== "running" && (
+                  <button
+                    onClick={reset}
+                    className="px-3 py-1.5 text-body-sm border border-border text-on-surface-variant hover:bg-surface-container-low rounded-lg"
+                  >
+                    再导一份
+                  </button>
                 )}
               </div>
-            </div>
-          )}
 
-          {/* Step 4: Save done */}
-          {step === "save" && saved && !isLoading && (
-            <div className="bg-surface border border-border rounded-xl p-6">
-              <div className="text-center mb-4">
-                <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-4">
-                  <Icon
-                    name="check_circle"
-                    filled
-                    className="text-[32px] text-success"
-                  />
-                </div>
-                <h3 className="text-body-lg font-bold text-on-surface mb-1">
-                  导入完成
-                </h3>
-                <p className="text-body-md text-on-surface-variant">
-                  已保存 <strong>{saved.saved_count}</strong> 个基础记忆文件
+              {/* ---- 保存结果摘要 ---- */}
+              {saved && !isLoading && (
+                <div className="text-body-md text-on-surface-variant">
+                  已保存 <strong className="text-on-surface">{saved.saved_count}</strong> 个基础记忆文件
                   {saved.mandol_synced
                     ? ` · Mandol 同步 ${saved.mandol_synced} 条`
                     : " · 未触发 Mandol 高阶构建"}
-                </p>
-              </div>
+                </div>
+              )}
 
-              {saved.original_path && (
-                <div className="bg-secondary-container rounded-lg p-3 mb-3">
+              {/* ---- 抽取结果 (构建完成后展示) ---- */}
+              {buildStatus?.result?.extraction && buildStatus.status === "completed" && (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <StatBox
+                      label="入库单元"
+                      value={buildStatus.result.extraction.total_units}
+                      icon="layers"
+                      color="primary"
+                    />
+                    <StatBox
+                      label="实体总数"
+                      value={buildStatus.result.extraction.entity_count}
+                      icon="person"
+                      color="info"
+                    />
+                    <StatBox
+                      label="事件总数"
+                      value={buildStatus.result.extraction.event_count}
+                      icon="event"
+                      color="info"
+                    />
+                    <StatBox
+                      label="图谱节点/边"
+                      value={`${buildStatus.result.neo4j_sync?.nodes ?? 0} / ${buildStatus.result.neo4j_sync?.edges ?? 0}`}
+                      icon="hub"
+                      color="primary"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <StatBox
+                      label="本次抽取实体"
+                      value={buildStatus.result.extraction.entities_extracted}
+                      icon="science"
+                      color="primary"
+                    />
+                    <StatBox
+                      label="本次新增实体"
+                      value={buildStatus.result.extraction.entities_added}
+                      icon="person_add"
+                      color="success"
+                    />
+                    <StatBox
+                      label="实体重复未入库"
+                      value={buildStatus.result.extraction.entities_deduped}
+                      icon="content_copy"
+                      color="primary"
+                    />
+                    <StatBox
+                      label="实体重复率"
+                      value={`${buildStatus.result.extraction.entities_extracted
+                          ? Math.round(
+                            (buildStatus.result.extraction.entities_deduped /
+                              buildStatus.result.extraction.entities_extracted) *
+                            100,
+                          )
+                          : 0
+                        }%`}
+                      icon="percent"
+                      color="primary"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <StatBox
+                      label="本次抽取事件"
+                      value={buildStatus.result.extraction.events_extracted}
+                      icon="science"
+                      color="primary"
+                    />
+                    <StatBox
+                      label="本次新增事件"
+                      value={buildStatus.result.extraction.events_added}
+                      icon="event_available"
+                      color="success"
+                    />
+                    <StatBox
+                      label="事件重复未入库"
+                      value={buildStatus.result.extraction.events_deduped}
+                      icon="content_copy"
+                      color="primary"
+                    />
+                    <StatBox
+                      label="事件重复率"
+                      value={`${buildStatus.result.extraction.events_extracted
+                          ? Math.round(
+                            (buildStatus.result.extraction.events_deduped /
+                              buildStatus.result.extraction.events_extracted) *
+                            100,
+                          )
+                          : 0
+                        }%`}
+                      icon="percent"
+                      color="primary"
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* ---- Neo4j 同步结果 ---- */}
+              {buildStatus?.result?.neo4j_sync && buildStatus.status === "completed" && (
+                <div className="bg-surface-container-low rounded-lg p-3 text-label-md text-on-surface-variant flex items-center gap-3 flex-wrap">
+                  <Icon name="hub" className="text-on-surface-variant text-[16px]" />
+                  <span>
+                    Neo4j 图谱同步: <strong className="text-on-surface">{buildStatus.result.neo4j_sync.nodes ?? 0}</strong> 节点 / <strong className="text-on-surface">{buildStatus.result.neo4j_sync.edges ?? 0}</strong> 关系
+                  </span>
+                </div>
+              )}
+
+              {/* ---- 原始文档 / 摘要 ---- */}
+              {saved?.original_path && (
+                <div className="bg-secondary-container rounded-lg p-3">
                   <div className="flex items-center gap-2 mb-1">
                     <Icon name="description" className="text-on-secondary-container text-[16px]" />
                     <span className="font-bold text-on-secondary-container text-body-sm">原始文档</span>
@@ -477,8 +726,8 @@ export default function ImportPage() {
                 </div>
               )}
 
-              {saved.summary_text && (
-                <details className="bg-primary-fixed/30 border border-primary/20 rounded-lg mb-3" open>
+              {saved?.summary_text && (
+                <details className="bg-primary-fixed/30 border border-primary/20 rounded-lg" open>
                   <summary className="p-3 cursor-pointer flex items-center gap-2 font-bold text-on-surface text-body-sm">
                     <Icon name="auto_awesome" className="text-primary text-[16px]" />
                     关键信息摘要（LLM 生成）
@@ -492,11 +741,109 @@ export default function ImportPage() {
                 </details>
               )}
 
-              <details className="bg-surface-container-low rounded-lg mb-4">
+              {/* ---- 实时日志 ---- */}
+              {buildLog.length > 0 && (
+                <details open className="bg-surface-container-low rounded-lg">
+                  <summary className="p-3 cursor-pointer text-body-sm font-bold text-on-surface flex items-center gap-2">
+                    <Icon name="terminal" className="text-on-surface-variant text-[16px]" />
+                    实时日志（{buildLog.length}）
+                  </summary>
+                  <div className="px-3 pb-3 max-h-56 overflow-y-auto custom-scrollbar font-mono text-label-sm space-y-1">
+                    {buildLog.map((e, i) => (
+                      <div
+                        key={i}
+                        className={[
+                          "flex items-start gap-2",
+                          e.level === "ok"
+                            ? "text-success"
+                            : e.level === "err"
+                              ? "text-error"
+                              : "text-on-surface-variant",
+                        ].join(" ")}
+                      >
+                        <span className="text-outline shrink-0">
+                          {new Date(e.ts).toLocaleTimeString("zh-CN", { hour12: false })}
+                        </span>
+                        <span className="shrink-0">
+                          {e.level === "ok" ? "✓" : e.level === "err" ? "✗" : "·"}
+                        </span>
+                        <span className="break-all">{e.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+
+              {!isLoading && buildStatus?.status === "running" && (
+                <p className="text-label-sm text-outline text-center">
+                  本页可保持不动；构建完会有弹窗提醒。
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Toast */}
+          {toast && (
+            <div
+              role="alert"
+              className={[
+                "fixed bottom-6 right-6 z-50 max-w-sm rounded-xl shadow-2xl border p-4 flex items-start gap-3 animate-[slideIn_.3s_ease-out]",
+                toast.type === "ok"
+                  ? "bg-success/10 border-success/30"
+                  : "bg-error/10 border-error/30",
+              ].join(" ")}
+            >
+              <Icon
+                name={toast.type === "ok" ? "check_circle" : "error"}
+                filled
+                className={[
+                  "text-[24px] shrink-0",
+                  toast.type === "ok" ? "text-success" : "text-error",
+                ].join(" ")}
+              />
+              <div className="flex-1 min-w-0">
+                <p
+                  className={[
+                    "font-bold text-body-md",
+                    toast.type === "ok" ? "text-success" : "text-error",
+                  ].join(" ")}
+                >
+                  {toast.title}
+                </p>
+                {toast.detail && (
+                  <p className="text-body-sm text-on-surface mt-0.5 break-all">
+                    {toast.detail}
+                  </p>
+                )}
+                <div className="flex gap-3 mt-2">
+                  {toast.type === "ok" && (
+                    <Link
+                      href="/memory"
+                      onClick={() => setToast(null)}
+                      className="text-label-md font-bold text-primary hover:underline"
+                    >
+                      去记忆库 →
+                    </Link>
+                  )}
+                  <button
+                    onClick={() => setToast(null)}
+                    className="text-label-md text-on-surface-variant hover:underline"
+                  >
+                    关闭
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 完成后: 文件清单 + 快捷按钮 (save+build 视图已合并) */}
+          {step === "save" && saved && !isLoading && buildStatus?.status === "completed" && (
+            <div className="bg-surface border border-border rounded-xl p-6 space-y-3">
+              <details className="bg-surface-container-low rounded-lg">
                 <summary className="p-3 cursor-pointer text-body-sm font-bold text-on-surface">
                   所有生成文件（{saved.paths.length}）
                 </summary>
-                <div className="px-3 pb-3 text-left max-h-48 overflow-y-auto">
+                <div className="px-3 pb-3 max-h-48 overflow-y-auto">
                   {saved.paths.map((p) => (
                     <p key={p} className="font-mono text-label-sm text-primary py-0.5 break-all">{p}</p>
                   ))}

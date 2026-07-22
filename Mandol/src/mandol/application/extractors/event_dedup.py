@@ -19,40 +19,51 @@ from ...ports.llm_provider import ChatMessage, LLMProvider
 
 logger = logging.getLogger(__name__)
 
-# Quick pre-filter: checks if a new event matches any existing signature.
-EVENT_QUICK_MATCH_PROMPT = """You are an event deduplication assistant. Quickly determine if a new event duplicates any event in an existing list.
+# 快速预筛选：判断新事件是否与已有事件签名重复
+EVENT_QUICK_MATCH_PROMPT = """你是一名事件去重助手。请快速判断新事件是否与现有列表中的某个事件重复。
 
-Input:
-- Existing event signatures: {signatures}
-- New event details: {new_event}
+输入：
+- 现有事件签名列表：{signatures}
+- 新事件详情：{new_event}
 
-Output JSON only:
+仅输出 JSON：
 {{
     "is_duplicate": true/false,
     "matched_signatures": ["sig1", "sig2"],
     "decision_confidence": 0.92
-}}"""
+}}
 
-# Detailed pairwise comparison: judges if two events are the same occurrence.
-EVENT_DETAILED_CONFIRM_PROMPT = """You are an event deduplication assistant. Compare two events and determine if they describe the same real-world occurrence.
+注意通用语言现象：
+- 同一事件用不同表述（缩写、别名、详写/简写）描述，应判定为重复
+- 时间表达差异（如『今天』与具体日期）若指向同一日，应视为同一事件
+- 主体/客体的称谓变化（如『客户』与具体客户名）不影响事件同一性"""
 
-Event from existing list:
+# 详细成对比较：判断两个事件是否描述同一真实发生的事
+EVENT_DETAILED_CONFIRM_PROMPT = """你是一名事件去重助手。请比较两个事件，判断它们是否描述同一真实发生的事。
+
+已有事件：
 {existing_event}
 
-Event from new batch:
+新批次事件：
 {new_event}
 
-Output JSON only:
+仅输出 JSON：
 {{
     "is_same_event": true/false,
     "merged_event": {{
-        "participants": ["merged participant list"],
-        "event_description": "merged description",
-        "absolute_time": "ISO 8601 format",
-        "signature": "normalized signature"
+        "participants": ["合并后的参与方列表"],
+        "event_description": "合并后的描述",
+        "absolute_time": "ISO 8601 格式",
+        "signature": "规范化后的签名"
     }},
     "decision_confidence": 0.95
-}}"""
+}}
+
+注意通用语言现象：
+- 同一事件用不同表述（缩写、别名、详写/简写）描述，应判定为同一
+- 否定/肯定/反问等不同语气若描述同一事实，仍视为同一事件
+- 时间表达差异（相对时间/绝对日期）若指向同一时间点，视为同一事件
+- 枚举/列举的不同项目不算同一事件，必须为同一具体发生的事"""
 
 
 def _generate_signature(event: MemoryUnit) -> str:

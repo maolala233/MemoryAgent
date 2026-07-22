@@ -184,12 +184,21 @@ class MemoryService:
         db.audit("delete", safe)
 
     # ---------------- Indexing ----------------
-    def rescan_vault(self) -> Dict[str, Any]:
+    def rescan_vault(self, skip_embed_if_exists: bool = True) -> Dict[str, Any]:
+        """重扫描 vault 文件，更新 SQLite 索引。
+
+        Args:
+            skip_embed_if_exists: 若为 True（默认），跳过已有向量的文档，
+                                   避免启动时对所有文档重新 embedding 拖慢速度。
+                                   只有没有向量的文档（新文档）才会计算向量。
+        """
         start = datetime.utcnow()
         root = settings.vault_dir
         if not root.exists():
             root.mkdir(parents=True, exist_ok=True)
         count = 0
+        embed_count = 0
+        skip_count = 0
         for path in root.rglob("*.md"):
             if any(part.startswith(".") for part in path.parts):
                 continue
@@ -197,15 +206,25 @@ class MemoryService:
             try:
                 raw = path.read_text(encoding="utf-8")
                 frontmatter, body = split_frontmatter(raw)
-                self._index_file(rel, frontmatter, body, embed=True)
+                
+                # 判断是否已有向量（含 chunk 向量），跳过 re-embedding
+                should_embed = True
+                if skip_embed_if_exists:
+                    existing = db.get_vector(rel)
+                    if existing is not None:
+                        should_embed = False
+                        skip_count += 1
+                if should_embed:
+                    embed_count += 1
+                self._index_file(rel, frontmatter, body, embed=should_embed)
                 count += 1
             except Exception as exc:
                 warn(f"Failed to index {rel}", exc=exc)
         elapsed = (datetime.utcnow() - start).total_seconds()
         cache.invalidate_prefix("stats:")
         cache.invalidate_prefix("search:")
-        info(f"Rescan complete: {count} docs in {elapsed:.2f}s")
-        return {"docs_indexed": count, "duration_seconds": elapsed}
+        info(f"Rescan complete: {count} docs in {elapsed:.2f}s (embedded={embed_count}, skipped={skip_count})")
+        return {"docs_indexed": count, "duration_seconds": elapsed, "embedded": embed_count, "skipped": skip_count}
 
     def _index_file(self, rel_path: str, frontmatter: Dict[str, Any],
                     body: str, embed: bool = True) -> Dict[str, Any]:

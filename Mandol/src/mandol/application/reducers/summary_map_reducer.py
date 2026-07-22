@@ -28,31 +28,31 @@ from .summary_prompts import (
 
 logger = logging.getLogger(__name__)
 
-SUMMARY_REDUCE_PROMPT_TEMPLATE = """You are a memory integration expert. Merge multiple {category} summary fragments into a coherent session-level {category} summary.
+SUMMARY_REDUCE_PROMPT_TEMPLATE = """你是一名记忆整合专家。请将多个 {category} 摘要片段合并为一个连贯的会话级 {category} 摘要。
 
-Category Definition:
+类别定义：
 {SUMMARY_TYPE_DEFINITIONS}
 
-Principles:
-1. Preserve all important information, avoid information loss
-2. Eliminate duplicates, merge similar viewpoints
-3. Maintain chronological/logical order
-4. Preserve the structured format of the {category} summary
+合并原则：
+1. 保留所有重要信息，避免信息丢失
+2. 消除重复，合并相似观点
+3. 保持时间/逻辑顺序
+4. 维持 {category} 摘要的结构化格式
 
-Output Format (pure JSON only, no markdown fences):
+输出格式（纯 JSON，不要 markdown 代码块）：
 {{
-    "reasoning": "Brief analysis: what overlaps, what's complementary, how they are merged",
+    "reasoning": "简要分析：哪些重叠、哪些互补、如何合并",
     "summaries": [
         {{
             "category": "{category}",
-            "text": "Merged summary text",
+            "text": "合并后的摘要文本",
             "key_source_uids": ["uid1", "uid2"],
             {category_fields}
         }}
     ]
 }}
 
-All textual content within the JSON must be in English."""
+所有 JSON 内的文本内容请使用中文。"""
 
 CATEGORY_OUTPUT_FIELDS = {
     "episodic": '''"timeline": [],
