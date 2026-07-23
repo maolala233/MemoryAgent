@@ -36,11 +36,18 @@ class Settings(BaseSettings):
     db_path: Path = Field(default_factory=lambda: Path("data/codex_memory.db"))
     upload_dir: Path = Field(default_factory=lambda: Path("data/uploads"))
     llm_profiles_path: Path = Field(default_factory=lambda: Path("data/llm_profiles.json"))
+    log_dir: Path = Field(default_factory=lambda: Path("data/logs"))
 
     # ---------------- 服务器 ----------------
     host: str = "0.0.0.0"
     port: int = 8000
     log_level: str = "INFO"
+    # 单个日志文件最大字节数,超过则滚动;默认 50MB
+    log_max_bytes: int = 50 * 1024 * 1024
+    # 日志保留天数,超过则自动清理;默认 7 天
+    log_retention_days: int = 7
+    # 滚动时保留的备份文件数(防止磁盘被写满);默认 20
+    log_backup_count: int = 20
 
     # CORS
     cors_origins: List[str] = Field(
@@ -158,7 +165,7 @@ class Settings(BaseSettings):
 
     def ensure_directories(self) -> None:
         """创建所有必需的目录。"""
-        for path in (self.vault_dir, self.upload_dir, self.db_path.parent, self.mandol_storage_dir):
+        for path in (self.vault_dir, self.upload_dir, self.db_path.parent, self.mandol_storage_dir, self.log_dir):
             path.mkdir(parents=True, exist_ok=True)
         # HuggingFace 缓存目录
         if self.hf_home:

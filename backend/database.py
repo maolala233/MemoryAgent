@@ -241,9 +241,14 @@ class Database:
         status: Optional[str] = None,
         project_id: Optional[str] = None,
         has_open_loop: Optional[bool] = None,
+        include_deleted: bool = False,
     ) -> Tuple[int, List[Dict[str, Any]]]:
         clauses = []
         params: List[Any] = []
+        # 默认排除已软删除的文档, 否则 list 视图会把 status='deleted' 的行重新捞出来
+        # 导致前端"删除 200 但列表还在"。如果显式按 status='deleted' 过滤, 仍会返回
+        if not include_deleted and status != "deleted":
+            clauses.append("status != 'deleted'")
         if track:
             clauses.append("track=?")
             params.append(track)

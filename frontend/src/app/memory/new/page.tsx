@@ -12,6 +12,30 @@ const TRACKS = ["project", "learning", "research", "reference", "personal"];
 const TYPES = ["note", "decision", "summary", "reference", "log", "spec", "issue"];
 const STATUSES = ["draft", "active", "verified", "archived"];
 
+// 友好显示名（数据库里仍是英文，仅在 UI 翻译），与 memory 列表/import 页面保持一致
+const STATUS_LABELS: Record<string, string> = {
+  draft: "草稿",
+  active: "活跃",
+  verified: "已验证",
+  archived: "已归档",
+};
+const TYPE_LABELS: Record<string, string> = {
+  note: "笔记",
+  decision: "决策",
+  summary: "摘要",
+  reference: "参考",
+  log: "日志",
+  spec: "规格",
+  issue: "问题",
+};
+const TRACK_LABELS: Record<string, string> = {
+  project: "项目",
+  learning: "学习",
+  research: "研究",
+  reference: "参考",
+  personal: "个人",
+};
+
 export default function NewMemoryPage() {
   const router = useRouter();
   const { createDocument } = useMemory();
@@ -32,11 +56,11 @@ export default function NewMemoryPage() {
     setError(null);
 
     if (!relPath.trim()) {
-      setError("Path is required (e.g. project/foo.md)");
+      setError("请填写路径（例如 project/foo.md）");
       return;
     }
     if (!content.trim()) {
-      setError("Content cannot be empty");
+      setError("内容不能为空");
       return;
     }
 
@@ -68,17 +92,17 @@ export default function NewMemoryPage() {
       if (created) {
         router.push(`/memory/${encodeURIComponent(created.rel_path)}`);
       } else {
-        setError("Failed to create memory");
+        setError("创建记忆失败");
       }
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : "Failed to save");
+      setError(err instanceof ApiError ? err.detail : "保存失败");
     } finally {
       setSaving(false);
     }
   };
 
   return (
-    <AppShell title="New Memory" subtitle="Create a new entry">
+    <AppShell title="新建记忆" subtitle="创建一条新记忆">
       <div className="flex-1 overflow-y-auto custom-scrollbar">
         <form
           onSubmit={onSubmit}
@@ -92,11 +116,11 @@ export default function NewMemoryPage() {
           )}
 
           <div className="bg-surface border border-border rounded-xl p-6 space-y-4">
-            <h3 className="text-body-lg font-bold text-on-surface">Metadata</h3>
+            <h3 className="text-body-lg font-bold text-on-surface">元数据</h3>
 
             <div>
               <label className="block text-label-md text-on-surface-variant mb-1">
-                Path <span className="text-error">*</span>
+                路径 <span className="text-error">*</span>
               </label>
               <input
                 type="text"
@@ -106,19 +130,19 @@ export default function NewMemoryPage() {
                 className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg font-mono text-body-md focus:ring-2 focus:ring-primary outline-none"
               />
               <p className="text-label-sm text-outline mt-1">
-                Relative path within the vault. Auto-appends .md if missing.
+                vault 内的相对路径，缺少后缀时自动补 .md
               </p>
             </div>
 
             <div>
               <label className="block text-label-md text-on-surface-variant mb-1">
-                Title
+                标题
               </label>
               <input
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="My New Memory"
+                placeholder="我的新记忆"
                 className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
               />
             </div>
@@ -126,7 +150,7 @@ export default function NewMemoryPage() {
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="block text-label-md text-on-surface-variant mb-1">
-                  Track
+                  轨道
                 </label>
                 <select
                   value={track}
@@ -135,14 +159,14 @@ export default function NewMemoryPage() {
                 >
                   {TRACKS.map((t) => (
                     <option key={t} value={t}>
-                      {t}
+                      {TRACK_LABELS[t] ?? t}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
                 <label className="block text-label-md text-on-surface-variant mb-1">
-                  Type
+                  类型
                 </label>
                 <select
                   value={memoryType}
@@ -151,14 +175,14 @@ export default function NewMemoryPage() {
                 >
                   {TYPES.map((t) => (
                     <option key={t} value={t}>
-                      {t}
+                      {TYPE_LABELS[t] ?? t}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
                 <label className="block text-label-md text-on-surface-variant mb-1">
-                  Status
+                  状态
                 </label>
                 <select
                   value={status}
@@ -167,7 +191,7 @@ export default function NewMemoryPage() {
                 >
                   {STATUSES.map((s) => (
                     <option key={s} value={s}>
-                      {s}
+                      {STATUS_LABELS[s] ?? s}
                     </option>
                   ))}
                 </select>
@@ -176,20 +200,20 @@ export default function NewMemoryPage() {
 
             <div>
               <label className="block text-label-md text-on-surface-variant mb-1">
-                Summary
+                摘要
               </label>
               <input
                 type="text"
                 value={summary}
                 onChange={(e) => setSummary(e.target.value)}
-                placeholder="One-line description"
+                placeholder="一句话描述"
                 className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg text-body-md focus:ring-2 focus:ring-primary outline-none"
               />
             </div>
 
             <div>
               <label className="block text-label-md text-on-surface-variant mb-1">
-                Keywords (comma-separated)
+                关键词（用逗号分隔）
               </label>
               <input
                 type="text"
@@ -203,15 +227,15 @@ export default function NewMemoryPage() {
 
           <div className="bg-surface border border-border rounded-xl p-6 space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-body-lg font-bold text-on-surface">Content</h3>
+              <h3 className="text-body-lg font-bold text-on-surface">内容</h3>
               <span className="text-label-sm text-outline">
-                Markdown supported
+                支持 Markdown 语法
               </span>
             </div>
             <textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              placeholder="# Heading&#10;&#10;Write your memory content in Markdown..."
+              placeholder="# 标题&#10;&#10;用 Markdown 写下你的记忆内容..."
               rows={16}
               className="w-full px-3 py-2 bg-surface-container-low border border-border rounded-lg font-mono text-body-md focus:ring-2 focus:ring-primary outline-none resize-y"
             />
@@ -223,7 +247,7 @@ export default function NewMemoryPage() {
               onClick={() => router.back()}
               className="px-4 py-2 text-body-md font-medium text-on-surface-variant hover:bg-surface-container-low rounded-lg transition-colors"
             >
-              Cancel
+              取消
             </button>
             <button
               type="submit"
@@ -235,7 +259,7 @@ export default function NewMemoryPage() {
               ) : (
                 <Icon name="save" className="text-[18px]" />
               )}
-              Save Memory
+              保存记忆
             </button>
           </div>
         </form>

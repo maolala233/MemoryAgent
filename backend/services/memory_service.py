@@ -84,10 +84,12 @@ class MemoryService:
         status: Optional[str] = None,
         project_id: Optional[str] = None,
         has_open_loop: Optional[bool] = None,
+        include_deleted: bool = False,
     ) -> Tuple[int, List[Dict[str, Any]]]:
         return db.list_docs(
             skip=skip, limit=limit, track=track, memory_type=memory_type,
             status=status, project_id=project_id, has_open_loop=has_open_loop,
+            include_deleted=include_deleted,
         )
 
     def get_stats(self) -> Dict[str, Any]:
@@ -182,6 +184,23 @@ class MemoryService:
         cache.invalidate_prefix("stats:")
         cache.invalidate_prefix("search:")
         db.audit("delete", safe)
+        # 同步从 Mandol 移除对应记忆单元, 否则 Milvus 单元数 / Neo4j 节点数
+        # 不会随文档删除而下降, 仪表盘数据失真。sync_document 创建的 uid 是
+        # "doc:{rel_path}", 这里反向匹配同一个 uid
+        self._remove_from_mandol(safe)
+
+    def _remove_from_mandol(self, rel_path: str) -> None:
+        """软删除/硬删除 markdown 文档时, 同步移除 Mandol 中对应的记忆单元。"""
+        try:
+            from .mandol_service import mandol_service
+            if not mandol_service.is_enabled:
+                return
+            uid = f"doc:{rel_path}"
+            mandol_service.remove_unit(uid)
+            info(f"已从 Mandol 移除记忆单元: {uid}")
+        except Exception as exc:
+            # 同步失败不能阻塞删除本身, 留 warn 即可
+            warn(f"从 Mandol 移除 {rel_path} 失败: {exc}")
 
     # ---------------- Indexing ----------------
     def rescan_vault(self, skip_embed_if_exists: bool = True) -> Dict[str, Any]:
@@ -206,7 +225,7 @@ class MemoryService:
             try:
                 raw = path.read_text(encoding="utf-8")
                 frontmatter, body = split_frontmatter(raw)
-                
+
                 # 判断是否已有向量（含 chunk 向量），跳过 re-embedding
                 should_embed = True
                 if skip_embed_if_exists:
@@ -220,11 +239,39 @@ class MemoryService:
                 count += 1
             except Exception as exc:
                 warn(f"Failed to index {rel}", exc=exc)
+
+        # 清理孤儿单元: 删除前若 Mandol 已 enabled, 但文档后来被软删除, 单元会
+        # 残留在 Milvus / Neo4j 里使仪表盘计数偏高。rescan 时把 list_docs
+        # 里的所有 status='deleted' 行对应的 Mandol 单元也一并移除。
+        self._cleanup_orphan_mandol_units()
+
         elapsed = (datetime.utcnow() - start).total_seconds()
         cache.invalidate_prefix("stats:")
         cache.invalidate_prefix("search:")
         info(f"Rescan complete: {count} docs in {elapsed:.2f}s (embedded={embed_count}, skipped={skip_count})")
         return {"docs_indexed": count, "duration_seconds": elapsed, "embedded": embed_count, "skipped": skip_count}
+
+    def _cleanup_orphan_mandol_units(self) -> None:
+        """rescan 时清理已被软删除的 markdown 文档对应的 Mandol 单元。"""
+        try:
+            from .mandol_service import mandol_service
+            if not mandol_service.is_enabled:
+                return
+            _, deleted_docs = db.list_docs(limit=10_000, include_deleted=True, status="deleted")
+            if not deleted_docs:
+                return
+            for d in deleted_docs:
+                rel = d.get("rel_path")
+                if not rel:
+                    continue
+                uid = f"doc:{rel}"
+                try:
+                    mandol_service.remove_unit(uid)
+                except Exception as exc:
+                    warn(f"清理孤儿单元失败 {uid}: {exc}")
+            info(f"rescan: 已清理 {len(deleted_docs)} 个 Mandol 孤儿单元")
+        except Exception as exc:
+            warn(f"清理 Mandol 孤儿单元失败: {exc}")
 
     def _index_file(self, rel_path: str, frontmatter: Dict[str, Any],
                     body: str, embed: bool = True) -> Dict[str, Any]:
@@ -242,6 +289,11 @@ class MemoryService:
             "open_loops": loops,
             "frontmatter": frontmatter,
             "body": body,  # 关键: 存到 memory_docs.body 供 LIKE 检索
+            # 同步返回 content 字段, 与 db._row_to_doc() / get_document() 保持一致
+            # 否则 PUT 响应经过 MemoryDocResponse(**doc) 后, Pydantic 找不到
+            # `content` 字段, 会用默认值 "" 把刚保存的内容吞掉, 表现就是
+            # 前端"保存后内容变 No content." 但文件其实已经写进去了
+            "content": body,
             "size_bytes": len(body.encode("utf-8")),
             "updated_at": frontmatter.get("updated_at") or datetime.utcnow().isoformat(timespec="seconds"),
             "created_at": frontmatter.get("created_at"),

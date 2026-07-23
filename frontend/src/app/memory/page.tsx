@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/layout/AppShell";
 import { Icon } from "@/components/shared/Icon";
 import { Loading } from "@/components/shared/Loading";
+import { Pagination } from "@/components/shared/Pagination";
 import { Pill } from "@/components/shared/Pill";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { useMemory } from "@/hooks/useMemory";
@@ -59,6 +60,9 @@ function MemoryVaultContent() {
   const [status, setStatus] = useState("");
   const [hasOpenLoop, setHasOpenLoop] = useState(false);
   const [search, setSearch] = useState("");
+  // 分页状态
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   // 一次性从后端拉取所有可选的 track / type 候选，避免被过滤后的 items 截断
   const [trackOptions, setTrackOptions] = useState<string[]>([]);
@@ -87,9 +91,22 @@ function MemoryVaultContent() {
       memory_type: type || undefined,
       status: status || undefined,
       has_open_loop: hasOpenLoop || undefined,
-      limit: 200,
+      skip: (page - 1) * pageSize,
+      limit: pageSize,
     });
-  }, [track, type, status, hasOpenLoop, listDocuments]);
+  }, [track, type, status, hasOpenLoop, page, pageSize, listDocuments]);
+
+  // 切换筛选时回到第一页, 避免越界
+  useEffect(() => {
+    setPage(1);
+  }, [track, type, status, hasOpenLoop]);
+
+  // 越界保护: total 变化后若当前页超出范围, 自动回退
+  const total = data?.total ?? 0;
+  const lastPage = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => {
+    if (page > lastPage) setPage(lastPage);
+  }, [page, lastPage]);
 
   const filtered = useMemo(() => {
     if (!data?.items) return [];
@@ -281,6 +298,19 @@ function MemoryVaultContent() {
               </Link>
               );
             })}
+          </div>
+          {/* 分页 */}
+          <div className="bg-surface-bright rounded-lg border border-border px-4 py-3">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onPageChange={setPage}
+              onPageSizeChange={(n) => {
+                setPageSize(n);
+                setPage(1);
+              }}
+            />
           </div>
         </div>
       </div>

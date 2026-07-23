@@ -152,7 +152,14 @@ def list_units(
         items = matched[offset: offset + limit]
         return MandolUnitListResponse(total=total, items=[MandolUnitInfo(**i) for i in items])
     items = _safe_call(mandol_service.list_units, limit=limit, offset=offset)
-    return MandolUnitListResponse(total=len(items), items=[MandolUnitInfo(**i) for i in items])
+    # total 必须是"全量总数", 而不是分页后的 len(items)——
+    # 否则前端"记忆单元 (100)"会和仪表盘上的"总计 175"对不上。
+    # 通过 get_stats() 拿 total_units, 走 5s 进程内缓存, 不会拖慢接口。
+    try:
+        total = int(mandol_service.get_stats(force=False).get("total_units", len(items)))
+    except Exception:
+        total = len(items)
+    return MandolUnitListResponse(total=total, items=[MandolUnitInfo(**i) for i in items])
 
 
 @router.get("/units/{uid:path}", response_model=MandolUnitInfo)

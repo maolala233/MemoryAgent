@@ -44,10 +44,12 @@ def list_documents(
     status: Optional[str] = None,
     project_id: Optional[str] = None,
     has_open_loop: Optional[bool] = None,
+    include_deleted: bool = Query(False, description="默认隐藏软删除文档, 仅在管理场景下打开"),
 ) -> MemoryListResponse:
     total, docs = memory_service.list_documents(
         skip=skip, limit=limit, track=track, memory_type=memory_type,
         status=status, project_id=project_id, has_open_loop=has_open_loop,
+        include_deleted=include_deleted,
     )
     return MemoryListResponse(total=total, items=[MemoryDoc(**d) for d in docs])
 

@@ -22,7 +22,7 @@ function StatCard({
 }: {
   icon: string;
   label: string;
-  value: string | number;
+  value?: string | number;
   sub?: string;
   accent?: "primary" | "success" | "warning" | "info" | "default";
   href?: string;
@@ -42,8 +42,10 @@ function StatCard({
           <Icon name={icon} filled className="text-[28px]" />
         </div>
         <div className="flex-1 min-w-0">
-          <p className="text-display-sm font-bold text-on-surface leading-none">{value}</p>
-          <p className="text-body-md font-medium text-on-surface mt-1">{label}</p>
+          {value !== undefined && value !== null && value !== "" && (
+            <p className="text-display-sm font-bold text-on-surface leading-none">{value}</p>
+          )}
+          <p className={`text-body-md font-medium text-on-surface ${value !== undefined && value !== null && value !== "" ? "mt-1" : ""}`}>{label}</p>
           {sub && <p className="text-label-md text-on-surface-variant mt-0.5">{sub}</p>}
         </div>
         {href && (
@@ -260,7 +262,7 @@ export default function DashboardPage() {
                 <StatCard icon="person" label="实体" value={stats.entity_count || 0} sub="已提取" accent="success" href="/entities" />
                 <StatCard icon="event" label="事件" value={stats.event_count || 0} sub="已提取" accent="warning" href="/events" />
                 <StatCard icon="summarize" label="摘要" value={stats.summary_count || 0} sub="已生成" accent="primary" href="/summaries" />
-                <StatCard icon="account_tree" label="基础记忆" value={stats.base_memory_count || 0} sub="图谱节点" accent="default" href="/graph" />
+                <StatCard icon="account_tree" label="知识图谱"  sub="图谱节点" accent="default" href="/graph" />
               </section>
 
               {/* ── 第二行：Token + 系统状态 + 外部存储 + 快速操作 ── */}

@@ -39,7 +39,13 @@ async def lifespan(app: FastAPI):
     # 启动时优先加载前端保存的本地模型配置（embedder / reranker 离线拉起）
     apply_model_store_config(settings)
     settings.ensure_directories()
-    setup_logging(settings.log_level)
+    setup_logging(
+        level=settings.log_level,
+        log_dir=settings.log_dir,
+        max_bytes=settings.log_max_bytes,
+        retention_days=settings.log_retention_days,
+        backup_count=settings.log_backup_count,
+    )
     info("启动记忆智能问答平台后端")
     info(
         f"外部存储默认连接: Milvus={settings.mandol_milvus_uri}, "

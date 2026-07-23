@@ -287,15 +287,44 @@ class MilvusUnitStore(UnitStore):
             self._dirty_units.clear()
 
     def clear(self) -> None:
-        """Delete all units from the Milvus collection and reset spaces."""
+        """Delete all units from the Milvus collection and reset spaces.
+
+        ⚠️ Milvus 的 ``client.delete(filter="uid != ''")`` 只会删除主键非空
+        的实体,而对 ``uid == ""`` 的实体既不返回也不匹配。这意味着历史上
+        由脏写产生的"空主键"实体无法被这条 filter 清除,会越攒越多,
+        让 ``get_collection_stats().row_count`` 不断虚高。
+
+        为了一劳永逸地"清空",这里直接 drop 整个 collection 再用同一份
+        schema 重建:任何残留实体(包括空主键、半写入、tombstone 堆积)
+        都会被物理清理,然后由 ``_ensure_client_and_collection()`` 在下次
+        访问时按需重新创建。
+        """
         self._ensure_client_and_collection()
         assert self._client is not None
-        # 删除 collection 中的所有实体
-        try:
-            self._client.delete(collection_name=self._cfg.collection, filter="uid != ''")
-        except Exception:
-            # 如果 collection 不存在则忽略
-            pass
+        if self._client.has_collection(self._cfg.collection):
+            try:
+                self._client.drop_collection(self._cfg.collection)
+                logger.info(
+                    "MilvusUnitStore.clear(): dropped collection '%s' to wipe "
+                    "all entities (including stale empty-uid rows)",
+                    self._cfg.collection,
+                )
+            except Exception as exc:  # noqa: BLE001
+                # collection 不存在等情况已经在 has_collection 之前过滤,
+                # 真出错再走 fallback 路径:尝试按 filter 删一次
+                logger.warning(
+                    "drop_collection failed (%s); falling back to filter delete",
+                    exc,
+                )
+                try:
+                    self._client.delete(
+                        collection_name=self._cfg.collection,
+                        filter="uid != ''",
+                    )
+                except Exception:
+                    pass
+        # 下次访问时 _ensure_client_and_collection() 会重新建表
+        self._client = None
         self._dirty_units.clear()
         self._deleted_units.clear()
         self._spaces.clear()
